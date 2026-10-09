@@ -46,9 +46,9 @@
   $effect(() => { if (!menu) { plus = false; addingNet = false; moreNets = false } })
   let sel = $state<string>('') // selected token id
   // background theme (Settings → «Фон»), per device
-  let theme = $state<Theme>((() => { try { const v = localStorage.getItem('theme') as Theme; return THEMES.includes(v) ? v : 'haze' } catch { return 'haze' } })()) // «Дымка» first: it is the one that visibly lives (critique 09.10)
+  let theme = $state<Theme>((() => { try { const v = localStorage.getItem('theme') as Theme; return THEMES.includes(v) ? v : 'imprint' } catch { return 'imprint' } })()) // «Отпечаток» first (Codex 10.10: it ties the background to the cards)
   function setTheme(v: Theme) { theme = v; try { localStorage.setItem('theme', v) } catch {} ; hero?.setTheme(v) }
-  const THEME_NAME: Record<Theme, string> = { hall: 'Зал', haze: 'Дымка', rays: 'Лучи' }
+  const THEME_NAME: Record<Theme, string> = { imprint: 'Отпечаток', glass: 'Стекло', relief: 'Рельеф' }
   let autolock = $state((() => { try { return Number(localStorage.getItem('autolock')) || 15 } catch { return 15 } })())
 
   let vaultAccounts = $state<Account[]>([])

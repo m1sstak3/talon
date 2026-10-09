@@ -167,22 +167,23 @@ function tex(cv: HTMLCanvasElement) {
   return t
 }
 
-// ---------------------------------------------------------------- backdrop: the room behind the cards, alive
-// The room behind the cards, three rooms with volume that never stand still (owner 09.10 late: «Зал» read static and could
-// not be chosen; picker in Settings → «Фон»). Motion in 3 words: «дыхание, дымка, лучи» — light travels slowly, haze drifts
-// through it, the ring's turn pushes it. ref fxology-propfirm-video (light in doses, a room that breathes) + leil-saunas-ember-hero.
-// All take a held-back tint of the network's mark; a send sends one ember ring from the docked card (a network switch does
-// not: owner 08.10). Linear light before ACES; the finish pass dithers. `time` stops under reduced motion.
-export const THEMES = ['hall', 'haze', 'rays'] as const
+// ---------------------------------------------------------------- backdrop: what stands behind the cards, alive
+// Three backgrounds in Settings → «Фон» (owner 10.10 rejected rooms, haze and rays as «the same spot every time»; Codex took
+// the references apart: fxology, doombeans, rainbow — no room, light belongs to the object). «Отпечаток»: the card printed
+// on black lacquer; «Стекло»: a pane of black glass behind the card; «Рельеф»: graphite folds. Motion in 3 words:
+// «блик, наклон, складка» — slow highlights, a rocking pane, the fold's crest following the ring. All take a held-back tint of
+// the network's mark; a send sends one ember ring from the docked card. Linear light before ACES; the finish pass dithers.
+// `time` stops under reduced motion.
+export const THEMES = ['imprint', 'glass', 'relief'] as const
 export type Theme = (typeof THEMES)[number]
 const backdropMat = new THREE.ShaderMaterial({
   uniforms: {
     ember: { value: 0 }, gain: { value: 0.45 }, theme: { value: 0 }, narrow: { value: 0 }, // gain: 1 home, .45 locked / welcome; narrow: phone, text over the room
-    time: { value: 0 }, pan: { value: 0 }, lean: { value: 0 }, wave: { value: 0 }, waveC: { value: new THREE.Color(1, 1, 1) }, tint: { value: new THREE.Color(0.9, 0.9, 0.9) },
+    time: { value: 0 }, pan: { value: 0 }, slide: { value: 0 }, lean: { value: 0 }, wave: { value: 0 }, waveC: { value: new THREE.Color(1, 1, 1) }, tint: { value: new THREE.Color(0.9, 0.9, 0.9) },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
   fragmentShader: `
-    varying vec2 vUv; uniform float ember, gain, time, pan, lean, wave, narrow; uniform vec3 waveC, tint; uniform int theme;
+    varying vec2 vUv; uniform float ember, gain, time, pan, lean, wave, narrow, slide; uniform vec3 waveC, tint; uniform int theme;
     float G(vec2 p, vec2 c, vec2 r){ vec2 d = (p - c) / r; return exp(-dot(d, d)); }
     float h1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
     float h2(vec2 q){ return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
@@ -190,58 +191,66 @@ const backdropMat = new THREE.ShaderMaterial({
     float n2(vec2 q){ vec2 i = floor(q), f = fract(q); f = f * f * (3. - 2. * f);
       return mix(mix(h2(i), h2(i + vec2(1., 0.)), f.x), mix(h2(i + vec2(0., 1.)), h2(i + 1.), f.x), f.y); }
     float fbm(vec2 q){ float s = 0., a = .5; for (int i = 0; i < 4; i++) { s += a * n2(q); q = q * 2.03 + vec2(1.7, 9.2); a *= .5; } return s / .94; }
+    float rbox(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q, 0.)) + min(max(q.x, q.y), 0.) - r; }
     void main(){
-      vec2 p = (vUv - .5) * vec2(120., 68.); // metres on the wall; the docked card is in front of (0, 0)
+      vec2 p = (vUv - .5) * vec2(120., 68.); // metres on the wall (z = -16); the docked card stands in front of (0, 0)
       float t = time;
-      vec3 hue = mix(vec3(.92, .9, .86), tint, .22); // the network's colour, held back: a room, not a logo
-      float room = G(p, vec2(0.), vec2(15., 8.5)); // lit around the card, dark towards the edges
-      // the studio key light the owner liked stays as the base under every theme; it leans with the ring's turn
-      vec3 e = .65 * (vec3(.070, .068, .064) * G(p, vec2(-3. + lean, 2.1), vec2(5.4, 3.9)) + vec3(.020, .022, .026) * G(p, vec2(3.8 + lean * .6, -1.8), vec2(4., 3.2)));
-      // the stage every room shares (owner 09.10: VOLUME, not patterns): real view rays through this wall pixel give a
-      // matte floor under the ring, a soft cove, light high on the far wall (Codex: cyclorama + aerial perspective).
-      // Alive (owner, later: «статичный»): the light wanders (~90 s), breathes (~15 s), haze drifts through it.
-      // No hard edges, no specks; pan = ring position, lean = turn speed (settles back).
-      vec3 ro = vec3(0., .1, 0.), rd = normalize(vec3(p, -16.) - ro);
-      float fy = -1.75, tf = rd.y < -1e-4 ? (fy - ro.y) / rd.y : 1e4;
-      vec3 hp = ro + rd * tf;
-      if (hp.z < -16. || tf > 1e3) hp = vec3(p.x, fy, -16.); // behind the wall: the cove
-      float lx = sin(pan * .35) * 1.4 - lean * .9 + sin(t * .21) * 1.3, sx = 5.2 * (1. + abs(lean) * .3); // the light wanders, ~30 s
-      float breathe = .8 + .2 * sin(t * .5);
-      float hz = fbm(hp.xz * vec2(.16, .3) + vec2(t * .11 + pan * .12, -t * .04)); // haze crossing the light on the floor
-      vec2 d = (hp.xz - vec2(lx, -5.)) / vec2(sx, 3.6);
-      float pool = (exp(-dot(d, d)) + .35 * exp(-dot(d, d) * .18)) * breathe * (.68 + .55 * hz); // wide penumbra, never a disc
-      float sheen = exp(-pow((hp.x - lx * .5) / 1.9, 2.)) * smoothstep(-20., -5., hp.z) * .5;
-      float fog = exp(-.055 * length(hp - ro));
-      float amt = smoothstep(-1.1, -2.6, p.y); // floor meets wall in a soft cove, no horizon line
-      float cove = exp(-pow((p.y + 1.75) / 2.4, 2.)) * G(p, vec2(lx * 2., 0.), vec2(18., 30.));
-      float back = G(p, vec2(2.5 + lx, 3.5), vec2(11., 7.)) * breathe;
-      float air = fbm(p * vec2(.07, .12) + vec2(t * .06 + pan * .06, t * .02)); // far air, slowly moving
-      vec3 wall = e * (.55 + .45 * smoothstep(9., -1., p.y)) + hue * back * (.018 + .05 * air);
-      vec3 floorC = mix(wall, hue * (.13 * pool + .035 * sheen), fog); // the far floor fades into the wall's air: no dark seam at the horizon
-      if (theme == 1) { // Дымка: low smoke rolls across the stage in three depths, lit from behind the ring
-        vec3 smoke = vec3(0.); float cover = 0.;
-        for (int i = 0; i < 3; i++) {
-          float k = float(i), sc = .11 + k * .05, v = .05 + k * .035;
-          float top = 1.2 - k * 1.3; // far layers rise higher on screen, near ones hug the floor
-          float dn = mix(smoothstep(-24., -9., p.x), 1., narrow) * smoothstep(top, top - 5.5, p.y) * smoothstep(.32, .78, fbm(vec2(p.x * sc + t * v + pan * (.08 + k * .07), p.y * sc * 1.9 - t * .02 + k * 3.1)));
-          vec3 lit = hue * (.05 + .1 * G(p, vec2(lx * 1.5 - 2. + k * 2., -.5), vec2(15. - k * 2., 7.))) * breathe;
-          smoke += (1. - cover) * dn * lit; cover += (1. - cover) * dn * .55;
-        }
-        wall = mix(wall, wall * .8, cover);
-        e = mix(wall, floorC, amt) * (1. - cover * .5) + smoke + hue * .025 * cove;
-      } else if (theme == 2) { // Лучи: shafts from a high window behind the ring sweep slowly through the haze
-        // critique 09.10: a point source read as a stage sunburst. A wide window far up and to the left: the shafts run
-        // nearly parallel across the room, a few at a time, and drift as the clouds outside would
-        vec2 src = vec2(-34. + lx * 2. + sin(t * .05) * 4., 62.), dv = p - src;
-        float ang = atan(dv.x, -dv.y), len = length(dv);
-        float sh = pow(n1(ang * 30. + t * .05 + pan * .04), 2.5) * (.4 + .6 * n1(ang * 64. - t * .08));
-        float fall = smoothstep(105., 55., len) * smoothstep(-7., 3., p.y + 2.); // the shafts fade into the floor, never stop on a line
-        float rays = sh * fall * (.45 + .9 * air) * mix(smoothstep(-26., -6., p.x), 1., narrow);
-        e = mix(wall * .7, floorC * (.75 + 1.4 * rays), amt) + hue * (.13 * rays * (1. - amt * .5) * (1. + .8 * narrow) + .028 * cove);
-      } else { // Зал: the stage itself, its air moving
-        e = mix(wall, floorC, amt) + hue * .032 * cove;
+      vec3 bone = vec3(.93, .91, .87), hue = mix(bone, tint, .5); // the network's colour, held back
+      float room = G(p, vec2(0.), vec2(15., 8.5));
+      vec3 e = vec3(0.);
+      // owner 10.10: «каждый раз одно и то же пятно». Codex, after the references (fxology, doombeans, rainbow): no room and
+      // no free-floating light; light belongs to the card or to one clear material behind it. slide = the ring between
+      // two cards (-.5...5): what is tied to the card travels with it. Judged on CPU renders of the camera's real window.
+      vec2 cc = vec2(-slide * 30. - lean * 1.2, -.3); // where the docked card stands on the wall
+      if (theme == 0) {
+        // «Отпечаток»: the card's metal printed on black lacquer, a step behind and below it: its silhouette, stretched
+        // highlights that turn slowly and with the ring, the network's colour on the rim
+        float s = 1.04 + .015 * sin(t * .4);
+        vec2 o = p - cc - vec2(1.5, -.9);
+        float d = rbox(o, vec2(3.2, 4.7) * s, .55);
+        float body = smoothstep(1.4, -1.6, d);
+        vec2 q = o / vec2(3.2, 4.7);
+        float a = .55 + .35 * sin(t * .42) - lean * .35;          // ~15 s, and with the ring's turn
+        float u = dot(q, vec2(cos(a), sin(a)));
+        float streak = exp(-pow((u - .25 * sin(t * .23)) / .16, 2.)) + .45 * exp(-pow((u + .55) / .07, 2.)); // a wide and a thin glint
+        float rim = exp(-pow(d / .9, 2.));
+        e = bone * (.010 * body + .060 * streak * body) + hue * (.045 * rim) + tint * .018 * exp(-pow(max(d, 0.) / 5., 2.))
+          + bone * .006 * exp(-pow(max(d, 0.) / 9., 2.));
+      } else if (theme == 1) {
+        // «Стекло»: one pane of black glass stands behind the card, turned away to the left; its thickness shows in a double
+        // bright edge, and through it the card's colour, bent. It rocks 2-3 degrees over ~18 s; a reflection crosses it
+        float ang = .5 + .045 * sin(t * .35) + lean * .03;
+        vec3 n = normalize(vec3(sin(ang), .06, cos(ang)));
+        vec3 rd = normalize(vec3(p, -16.));
+        vec3 c0 = vec3(-1., .3, -8.5);
+        float tp = dot(c0, n) / dot(rd, n);
+        vec3 hp = rd * tp;
+        vec3 ux = normalize(cross(vec3(0., 1., 0.), n)), uy = cross(n, ux);
+        vec2 lp = vec2(dot(hp - c0, ux), dot(hp - c0, uy));
+        float edge = rbox(lp, vec2(3.5, 2.55), .6);
+        float front = step(0., tp), inside = smoothstep(.15, -.15, edge) * front;
+        vec3 rr = refract(rd, n, 1. / 1.5);
+        float through = smoothstep(1.2, -1.2, rbox(p + rr.xy * 4. - cc, vec2(3.2, 4.7), .55));
+        float fres = pow(1. - abs(dot(rd, n)), 3.);
+        float rimL = (exp(-pow(edge / .03, 2.)) + .6 * exp(-pow((edge + .07) / .03, 2.))) * (.45 + .55 * smoothstep(-2.55, 2.55, lp.y));
+        float sweep = exp(-pow((lp.x + lp.y * .35 - 30. * fract(t * .018) + 15.) / 2.5, 2.));
+        e = inside * (tint * .035 * through + bone * (.012 * fres + .04 * sweep * (.3 + .7 * fres)) + bone * .006 * (.4 + .6 * smoothstep(-3.5, 3.5, lp.x)))
+          + bone * .11 * rimL * front;
+      } else {
+        // «Рельеф»: graphite with two shallow folds; the volume is in the turn of the tone, the crest highlights follow
+        // the card's turn, and the network's colour lies only on the crest nearest to the card
+        vec2 dir1 = normalize(vec2(1., -.35)), dir2 = normalize(vec2(.55, 1.));
+        float o1 = dot(p, dir1) - 2. + sin(t * .27) * .8, o2 = dot(p, dir2) + 4. + sin(t * .23 + 1.) * .7;
+        float w1 = 2.6, w2 = 2.1;
+        float h1v = 1.4 * exp(-pow(o1 / w1, 2.)), h2v = .9 * exp(-pow(o2 / w2, 2.));
+        vec2 grad = h1v * (-2. * o1 / (w1 * w1)) * dir1 + h2v * (-2. * o2 / (w2 * w2)) * dir2;
+        vec3 nrm = normalize(vec3(-grad * 1.4, 1.));
+        float th = 2.2 + lean * .5 + slide * 1.2 + .15 * sin(t * .3);
+        vec3 L = normalize(vec3(cos(th), sin(th), 1.1)), Hh = normalize(L + vec3(0., 0., 1.));
+        float spec = pow(max(dot(nrm, Hh), 0.), 70.), dif = max(dot(nrm, L), 0.);
+        e = vec3(.010, .010, .012) * dif + bone * .09 * spec + tint * .05 * spec * G(p, cc, vec2(12., 9.));
       }
-      e *= 1. - .55 * narrow; // phone: the column lies over the room, keep it quiet under the text
+      e *= mix(.5 + .5 * smoothstep(-9., -4., p.x), .45, narrow); // the money column stays dark (desktop: left; phone: below)
       // a switch or a send: one ring leaves the docked card and crosses the room
       float r = wave * 26., ring = exp(-pow((length(p * vec2(1., 1.2)) - r) / 1.8, 2.)) * (1. - wave) * step(.0005, wave);
       e += waveC * .14 * ring * (.35 + .65 * room);
@@ -703,6 +712,7 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
     let dr = Number.isNaN(lastRing) ? 0 : ringPos.v - lastRing; const nn = N(); if (dr > nn / 2) dr -= nn; if (dr < -nn / 2) dr += nn; lastRing = ringPos.v
     if (!still) { backdropMat.uniforms.pan.value += dr * 1.8; lean += (Math.max(-1.6, Math.min(1.6, (dr / Math.max(dt, 1e-3)) * 0.9)) - lean) * ease(0.35) }
     backdropMat.uniforms.lean.value = lean
+    backdropMat.uniforms.slide.value = ringPos.v - Math.round(ringPos.v)
     const sx = still ? 0.65 : 0.65 + 0.65 * Math.sin(t * 0.1) // 63 s sweep
     strip.position.x = sx + (glint.x - sx) * glint.w
     strip.lookAt(C)
