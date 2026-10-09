@@ -353,11 +353,13 @@ pub fn create(path: &Path, src: Source, name: &str, pass: &str, kdf: Kdf) -> Res
 
 /// check the passphrase (unlock). Secrets are dropped (wiped) before returning.
 pub fn unlock(path: &Path, pass: &str) -> Result<Vec<Account>, String> {
-    let (sec, accs, kdf) = open(&read(path)?, pass)?;
-    // an older file: the derived EVM addresses go into its public list now, so they show before unlocking next time
+    let text = read(path)?;
+    let (sec, accs, kdf) = open(&text, pass)?;
+    // an older file: the derived EVM addresses go into its public list now, so they show before unlocking next time.
+    // Under the write lock and only if the file is still the one just read (Codex 10.10: never write back a stale copy)
     if accs != accounts(path)? {
         let _w = WRITE.lock().unwrap();
-        write_proven(path, &seal(&sec, pass, kdf, accs.clone())?, pass)?;
+        if read(path)? == text { write_proven(path, &seal(&sec, pass, kdf, accs.clone())?, pass)?; }
     }
     Ok(accs)
 }
