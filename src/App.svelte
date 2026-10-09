@@ -631,7 +631,7 @@
     vs.then(s => { startUnlocked = !!s?.unlocked; kindRes(!coreAvailable() ? 'none' : !s?.accounts.length ? 'welcome' : s.unlocked ? 'open' : 'locked') })
     // the heavy part (WebGL, light, card faces) starts once the intro's circle is traced
     Promise.all([traced, vs]).then(() => {
-      try { hero = createHero(canvas, { pick: id => setChain(id), open: id => (id === chainId ? go('home') : setChain(id)) }); hero.setTheme(theme) } // side card -> switch; front -> home
+      try { hero = createHero(canvas, { pick: id => setChain(id), open: id => (id === chainId ? go('home') : setChain(id)) }); hero.setTheme(theme); if (import.meta.env.DEV) (window as any).__hero = hero } // side card -> switch; front -> home
       catch { hero = null } // no WebGL: the wallet works without the hero
       return hero?.prepare(netDeck(), chainId, startUnlocked || !hasVault, !hasVault, !still() && !hasVault) // scattered cards are all in view: every face up front; the coin ceremony is the first launch only
     }).catch(() => {}).finally(readyRes)

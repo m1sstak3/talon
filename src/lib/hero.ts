@@ -179,11 +179,11 @@ export type Theme = (typeof THEMES)[number]
 const backdropMat = new THREE.ShaderMaterial({
   uniforms: {
     ember: { value: 0 }, gain: { value: 0.45 }, theme: { value: 0 }, narrow: { value: 0 }, // gain: 1 home, .45 locked / welcome; narrow: phone, text over the room
-    time: { value: 0 }, pan: { value: 0 }, slide: { value: 0 }, lean: { value: 0 }, wave: { value: 0 }, waveC: { value: new THREE.Color(1, 1, 1) }, tint: { value: new THREE.Color(0.9, 0.9, 0.9) },
+    time: { value: 0 }, pan: { value: 0 }, slide: { value: 0 }, docked: { value: 0 }, lean: { value: 0 }, wave: { value: 0 }, waveC: { value: new THREE.Color(1, 1, 1) }, tint: { value: new THREE.Color(0.9, 0.9, 0.9) },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
   fragmentShader: `
-    varying vec2 vUv; uniform float ember, gain, time, pan, lean, wave, narrow, slide; uniform vec3 waveC, tint; uniform int theme;
+    varying vec2 vUv; uniform float ember, gain, time, pan, lean, wave, narrow, slide, docked; uniform vec3 waveC, tint; uniform int theme;
     float G(vec2 p, vec2 c, vec2 r){ vec2 d = (p - c) / r; return exp(-dot(d, d)); }
     float h1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
     float h2(vec2 q){ return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
@@ -214,8 +214,9 @@ const backdropMat = new THREE.ShaderMaterial({
         float u = dot(q, vec2(cos(a), sin(a)));
         float streak = exp(-pow((u - .25 * sin(t * .23)) / .16, 2.)) + .45 * exp(-pow((u + .55) / .07, 2.)); // a wide and a thin glint
         float rim = exp(-pow(d / .9, 2.));
-        e = bone * (.010 * body + .060 * streak * body) + hue * (.045 * rim) + tint * .018 * exp(-pow(max(d, 0.) / 5., 2.))
-          + bone * .006 * exp(-pow(max(d, 0.) / 9., 2.));
+        // the network's colour only as a trace in the rim: a coloured veil around the card is banned (brief: no purple haze)
+        e = (bone * (.010 * body + .060 * streak * body) + mix(bone, tint, .3) * (.04 * rim)
+          + bone * .006 * exp(-pow(max(d, 0.) / 9., 2.))) * docked; // the print belongs to the docked card: none while the deck rests far away
       } else if (theme == 1) {
         // «Стекло»: one pane of black glass stands behind the card, turned away to the left; its thickness shows in a double
         // bright edge, and through it the card's colour, bent. It rocks 2-3 degrees over ~18 s; a reflection crosses it
@@ -248,7 +249,7 @@ const backdropMat = new THREE.ShaderMaterial({
         float th = 2.2 + lean * .5 + slide * 1.2 + .15 * sin(t * .3);
         vec3 L = normalize(vec3(cos(th), sin(th), 1.1)), Hh = normalize(L + vec3(0., 0., 1.));
         float spec = pow(max(dot(nrm, Hh), 0.), 70.), dif = max(dot(nrm, L), 0.);
-        e = vec3(.010, .010, .012) * dif + bone * .09 * spec + tint * .05 * spec * G(p, cc, vec2(12., 9.));
+        e = vec3(.026, .026, .030) * dif * dif + bone * .15 * spec + tint * .06 * spec * G(p, cc, vec2(12., 9.)); // the turn of the tone shows the folds, the crest catches the light
       }
       e *= mix(.5 + .5 * smoothstep(-9., -4., p.x), .45, narrow); // the money column stays dark (desktop: left; phone: below)
       // a switch or a send: one ring leaves the docked card and crosses the room
@@ -713,6 +714,7 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
     if (!still) { backdropMat.uniforms.pan.value += dr * 1.8; lean += (Math.max(-1.6, Math.min(1.6, (dr / Math.max(dt, 1e-3)) * 0.9)) - lean) * ease(0.35) }
     backdropMat.uniforms.lean.value = lean
     backdropMat.uniforms.slide.value = ringPos.v - Math.round(ringPos.v)
+    backdropMat.uniforms.docked.value = dock.v
     const sx = still ? 0.65 : 0.65 + 0.65 * Math.sin(t * 0.1) // 63 s sweep
     strip.position.x = sx + (glint.x - sx) * glint.w
     strip.lookAt(C)
