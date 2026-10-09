@@ -167,7 +167,7 @@ fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> { let body: Vec<u8> = items.concat(); 
 #[cfg_attr(test, derive(Debug))]
 pub struct Draft {
     pub chain_id: u64, pub rpc: String, pub nonce: u64, prio: u128, max_fee: u128, gas: u64,
-    call_to: [u8; 20], value: u128, data: Vec<u8>,
+    call_to: [u8; 20], pub value: u128, data: Vec<u8>,
     pub from: String, pub to: String, pub amount: u128, pub decimals: u8, pub symbol: String, pub token: Option<String>,
     pub native: String, pub network: String, pub test: bool, pub custom: bool, pub new_recipient: bool, pub warn: Option<String>,
     pub fee_max: u128, // gas x max fee + the L1 part with its margin: the most this can cost
@@ -474,6 +474,134 @@ pub async fn history(chain_id: u64, address: &str) -> Result<Vec<HTx>, String> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------- swaps (owner 10.10: «like other wallets, or better»)
+// LI.FI: a keyless aggregator that compares the DEXs of a network and returns one transaction for its diamond contract.
+// The core never trusts that transaction: the contract must be the LI.FI diamond, the function one of the GenericSwap
+// facet's swaps, the receiver encoded in it must be our own address and the minimum it enforces must equal the quote's.
+// An ERC-20 input needs an exact-amount approve first (never unlimited); both are confirmed with one password.
+pub const LIFI: &str = "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE";
+const LIFI_SWAPS: [[u8; 4]; 7] = [ // GenericSwapFacetV3 + swapTokensGeneric (selectors checked with `cast sig`)
+    [0x46, 0x66, 0xfc, 0x80], [0x73, 0x32, 0x14, 0xa3], [0xaf, 0x70, 0x60, 0xfd], [0x5f, 0xd9, 0xae, 0x2e],
+    [0x2c, 0x57, 0xe8, 0x84], [0x73, 0x6e, 0xac, 0x0b], [0x46, 0x30, 0xa0, 0xd8],
+];
+pub const NATIVE: &str = "0x0000000000000000000000000000000000000000";
+#[derive(serde::Serialize, Clone)]
+pub struct SwapToken { id: String, symbol: String, name: String, icon: Option<String>, decimals: u8, verified: bool, price: Option<f64> }
+static TOKENS: std::sync::Mutex<Option<std::collections::HashMap<u64, Vec<SwapToken>>>> = std::sync::Mutex::new(None);
+/// every token LI.FI can swap on the network (its curated list, cached for the session)
+pub async fn swap_tokens(chain_id: u64) -> Result<Vec<SwapToken>, String> {
+    if let Some(l) = TOKENS.lock().unwrap().as_ref().and_then(|m| m.get(&chain_id).cloned()) { return Ok(l) }
+    let v = lifi(&format!("tokens?chains={chain_id}")).await?;
+    let clip = |s: &str, n: usize| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>();
+    let mut l: Vec<SwapToken> = v["tokens"][chain_id.to_string()].as_array().into_iter().flatten().filter_map(|t| Some(SwapToken {
+        id: checksum(&addr_bytes(t["address"].as_str()?).ok()?), symbol: clip(t["symbol"].as_str()?, 12), name: clip(t["name"].as_str().unwrap_or(""), 40),
+        icon: t["logoURI"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string), decimals: t["decimals"].as_u64().filter(|d| *d <= 36)? as u8,
+        verified: t["verificationStatus"].as_str() == Some("verified"), price: t["priceUSD"].as_str().and_then(|p| p.parse().ok()).filter(|p: &f64| p.is_finite() && *p > 0.0),
+    })).collect();
+    l.sort_by(|a, b| b.verified.cmp(&a.verified).then(b.price.is_some().cmp(&a.price.is_some())));
+    TOKENS.lock().unwrap().get_or_insert_with(Default::default).insert(chain_id, l.clone());
+    Ok(l)
+}
+async fn lifi(path: &str) -> Result<Value, String> {
+    let r = http()?.get(format!("https://li.quest/v1/{path}")).send().await.map_err(|_| "сервис обмена не ответил".to_string())?;
+    let ok = r.status().is_success();
+    let v: Value = r.json().await.map_err(|_| "сервис обмена ответил не тем".to_string())?;
+    if !ok { return Err(match v["message"].as_str() { Some(m) if m.to_lowercase().contains("no available quotes") || m.to_lowercase().contains("no routes") => "для этой пары сейчас нет маршрута обмена".into(), Some(m) => format!("сервис обмена: {}", m.chars().take(140).collect::<String>()), None => "сервис обмена отказал".into() }) }
+    Ok(v)
+}
+fn is_native(t: &str) -> bool { t.eq_ignore_ascii_case(NATIVE) || t.eq_ignore_ascii_case("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE") }
+async fn token_decimals(chain_id: u64, t: &str) -> Result<u8, String> {
+    if is_native(t) { return Ok(18) }
+    swap_tokens(chain_id).await?.iter().find(|x| x.id.eq_ignore_ascii_case(t)).map(|x| x.decimals).ok_or_else(|| "этого токена нет в списке обмена".into())
+}
+#[derive(serde::Serialize)]
+pub struct SwapQuote { in_amount: String, out_amount: String, min_out: String, out_decimals: u8, impact: String, route: String, fee_bps: u16 }
+async fn quote_raw(chain_id: u64, from: &str, input: &str, output: &str, amount: u128) -> Result<Value, String> {
+    lifi(&format!("quote?fromChain={chain_id}&toChain={chain_id}&fromToken={input}&toToken={output}&fromAmount={amount}&fromAddress={from}&slippage=0.005&order=CHEAPEST")).await
+}
+pub async fn swap_quote(chain_id: u64, from: &str, input: &str, output: &str, amount: &str) -> Result<SwapQuote, String> {
+    if input.eq_ignore_ascii_case(output) { return Err("выберите другой токен".into()) }
+    let (din, dout) = (token_decimals(chain_id, input).await?, token_decimals(chain_id, output).await?);
+    let amt = parse_units(amount, din as u32)?;
+    let q = quote_raw(chain_id, from, input, output, amt).await?;
+    let num = |v: &Value| v.as_str().and_then(|s| s.parse::<u128>().ok()).unwrap_or(0);
+    Ok(SwapQuote { in_amount: units(amt, din as u32), out_amount: units(num(&q["estimate"]["toAmount"]), dout as u32), min_out: units(num(&q["estimate"]["toAmountMin"]), dout as u32),
+        out_decimals: dout, impact: String::new(), route: q["toolDetails"]["name"].as_str().or(q["tool"].as_str()).unwrap_or("").chars().take(40).collect(), fee_bps: 0 })
+}
+/// the swap as one or two drafts (approve + swap), each priced; the swap's transaction vetted as described above
+pub struct SwapPlan { pub drafts: Vec<Draft>, pub out_amount: u128, pub min_out: u128, pub out_decimals: u8, pub output: String, pub route: String }
+pub fn vet_lifi(chain_id: u64, from: &[u8; 20], tx: &Value, value: u128, min_out: u128) -> Result<(Vec<u8>, u128), String> {
+    let refuse = |why: &str| Err(format!("кошелёк отказался подписывать этот обмен: {why}"));
+    if tx["chainId"].as_u64() != Some(chain_id) { return refuse("другая сеть") }
+    if !tx["to"].as_str().is_some_and(|t| t.eq_ignore_ascii_case(LIFI)) { return refuse("незнакомый контракт") }
+    let data = tx["data"].as_str().and_then(|d| d.strip_prefix("0x")).filter(|d| d.len() % 2 == 0 && d.len() >= 8 + 64 * 6).ok_or("пустой обмен")?;
+    let data: Vec<u8> = (0..data.len() / 2).map(|i| u8::from_str_radix(&data[2 * i..2 * i + 2], 16)).collect::<Result<_, _>>().map_err(|_| "битые данные обмена")?;
+    if !LIFI_SWAPS.iter().any(|s| data[..4] == *s) { return refuse("незнакомая операция") }
+    let w = |i: usize| &data[4 + 32 * i..4 + 32 * (i + 1)];
+    let small = |x: &[u8]| -> Option<u128> { x[..16].iter().all(|b| *b == 0).then(|| u128::from_be_bytes(x[16..].try_into().unwrap())) };
+    if small(w(1)) != Some(0xc0) || small(w(2)) != Some(0x100) { return refuse("незнакомое устройство данных") } // two string offsets: the GenericSwap layout
+    if w(3)[..12].iter().any(|b| *b != 0) || w(3)[12..] != from[..] { return refuse("монеты ушли бы на чужой адрес") }
+    if w(4)[..16].iter().any(|b| *b != 0) || u128::from_be_bytes(w(4)[16..].try_into().unwrap()) < min_out { return refuse("минимум ниже обещанного") }
+    let v = tx["value"].as_str().map(|s| hex_u128(&Value::String(s.into()))).transpose()?.unwrap_or(0);
+    if v != value { return refuse("сумма монет не та") }
+    let gas = tx["gasLimit"].as_str().map(|s| hex_u128(&Value::String(s.into()))).transpose()?.unwrap_or(0);
+    Ok((data, gas))
+}
+pub async fn prepare_swap(url: &str, chain_id: u64, from: &str, input: &str, output: &str, amount: &str) -> Result<SwapPlan, String> {
+    let n = net(chain_id).ok_or("в этой сети обмен недоступен")?;
+    if n.test { return Err("в тестовой сети обмена нет".into()) }
+    let fa = addr_bytes(from)?;
+    let (din, dout) = (token_decimals(chain_id, input).await?, token_decimals(chain_id, output).await?);
+    let amt = parse_units(amount, din as u32)?;
+    let http = http()?;
+    chain_ok(&http, url, chain_id).await?;
+    let q = quote_raw(chain_id, from, input, output, amt).await?;
+    let num = |v: &Value| v.as_str().and_then(|s| s.parse::<u128>().ok()).unwrap_or(0);
+    let (out_amount, min_out) = (num(&q["estimate"]["toAmount"]), num(&q["estimate"]["toAmountMin"]));
+    if min_out == 0 { return Err("сервис обмена не назвал минимум".into()) }
+    let native_in = is_native(input);
+    let (data, quoted_gas) = vet_lifi(chain_id, &fa, &q["transactionRequest"], if native_in { amt } else { 0 }, min_out)?;
+    let bal = hex_u128(&rpc(&http, url, "eth_getBalance", json!([from, "pending"])).await?)?;
+    let nonce = hex_u128(&rpc(&http, url, "eth_getTransactionCount", json!([from, "pending"])).await?)? as u64;
+    let (prio, max_fee) = fees(&http, url).await?;
+    let lifi = addr_bytes(LIFI)?;
+    let base = |nonce: u64, call_to: [u8; 20], value: u128, data: Vec<u8>, symbol: &str, decimals: u8, amount: u128| Draft {
+        chain_id, rpc: url.to_string(), nonce, prio, max_fee, gas: 0, call_to, value, data,
+        from: checksum(&fa), to: LIFI.into(), amount, decimals, symbol: symbol.into(), token: (!native_in).then(|| input.to_string()),
+        native: n.native.into(), network: n.name.into(), test: false, custom: false, new_recipient: false, warn: None, fee_max: 0,
+    };
+    let sym_in = if native_in { n.native.to_string() } else { swap_tokens(chain_id).await?.iter().find(|x| x.id.eq_ignore_ascii_case(input)).map(|x| x.symbol.clone()).unwrap_or_default() };
+    let mut drafts = vec![];
+    if !native_in {
+        // the spender LI.FI names must be its diamond too; the allowance is the exact amount, never unlimited
+        if !q["estimate"]["approvalAddress"].as_str().is_some_and(|a| a.eq_ignore_ascii_case(LIFI)) { return Err("кошелёк отказался: разрешение просили для незнакомого контракта".into()) }
+        let have = token_balance(&http, url, input, &fa, "pending").await?;
+        if have < amt { return Err(format!("на счёте только {} {sym_in}", units(have, din as u32))) }
+        let mut a = vec![0xdd, 0x62, 0xed, 0x3e]; a.extend_from_slice(&word(&fa)); a.extend_from_slice(&word(&lifi));
+        let allowed = word_u128(rpc(&http, url, "eth_call", json!([{ "to": input, "data": hex0x(&a) }, "pending"])).await?.as_str().unwrap_or("0x0")).unwrap_or(u128::MAX);
+        if allowed < amt {
+            let mut d = vec![0x09, 0x5e, 0xa7, 0xb3]; d.extend_from_slice(&word(&lifi)); d.extend_from_slice(&word(&amt.to_be_bytes()));
+            let mut ap = base(nonce, addr_bytes(input)?, 0, d, &sym_in, din, amt);
+            price(&http, url, &mut ap, true, n.l1).await?;
+            drafts.push(ap);
+        }
+    }
+    let mut sw = base(nonce + drafts.len() as u64, lifi, if native_in { amt } else { 0 }, data, &sym_in, din, amt);
+    if drafts.is_empty() {
+        price(&http, url, &mut sw, true, n.l1).await?; // the dry run: the node executes the vetted call now
+    } else {
+        // after an approve that is not mined yet the swap cannot be dry-run: LI.FI's own gas figure with 25% room
+        if quoted_gas == 0 || quoted_gas > 3_000_000 { return Err("сервис обмена не назвал газ".into()) }
+        sw.gas = (quoted_gas + quoted_gas / 4) as u64;
+        let l1 = l1_fee(&http, url, n.l1, &sw.payload()).await?;
+        sw.fee_max = sw.gas as u128 * sw.max_fee + l1 + l1 / 2;
+    }
+    drafts.push(sw);
+    let fees_total: u128 = drafts.iter().map(|d| d.fee_max).sum();
+    if bal < fees_total + if native_in { amt } else { 0 } { return Err(format!("не хватает {} на сумму и комиссию", n.native)) }
+    Ok(SwapPlan { drafts, out_amount, min_out, out_decimals: dout, output: output.to_string(), route: q["toolDetails"]["name"].as_str().unwrap_or("").into() })
+}
+
 // ---------------------------------------------------------------- send and follow
 pub enum Sent { Ok, Unknown, Rejected(String) }
 pub async fn submit(rpc_url: &str, raw: &[u8]) -> Sent {
@@ -649,5 +777,72 @@ mod history_live {
             println!("{id}: {} entries, first {:?}", h.len(), h[0]);
         }
         assert!(tauri::async_runtime::block_on(super::history(8453, "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")).unwrap_err().contains("не собирается"));
+    }
+}
+
+/// live: swaps through LI.FI executed on a local fork of Base mainnet (nothing real moves).
+/// `anvil --fork-url https://mainnet.base.org --port 8547` then `cargo test evm_swap_live -- --ignored --nocapture`
+#[cfg(test)]
+mod swap_live {
+    use super::*;
+    const URL: &str = "http://127.0.0.1:8547";
+    // a fresh key per run: a public dev key may carry old approvals on the forked mainnet
+    fn key() -> [u8; 32] { static K: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new(); *K.get_or_init(|| { let mut k = [0u8; 32]; getrandom::getrandom(&mut k).unwrap(); k }) }
+    fn from() -> String { crate::vault::evm_address(&key()) }
+    const FROM: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"; // only for the offline vetting test
+    const USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    async fn run(p: &SwapPlan) {
+        let key = k256::ecdsa::SigningKey::from_slice(&key()).unwrap();
+        for d in &p.drafts {
+            let (sig, rec) = key.sign_prehash_recoverable(&d.hash()).unwrap();
+            let raw = d.signed(&sig.to_bytes().into(), rec.to_byte());
+            assert!(matches!(submit(URL, &raw).await, Sent::Ok));
+            assert!(matches!(track(URL, &tx_hash(&raw), &from(), d.nonce, || {}).await, Outcome::Confirmed), "tx {} failed", d.nonce);
+        }
+    }
+    #[test]
+    #[ignore]
+    fn evm_swap_live() { tauri::async_runtime::block_on(go()) }
+    async fn go() {
+        let h = http().unwrap();
+        let from = from(); let from = from.as_str();
+        rpc(&h, URL, "anvil_setBalance", json!([from, qty(1_000_000_000_000_000_000)])).await.unwrap();
+        let me = addr_bytes(from).unwrap();
+        let u0 = token_balance(&h, URL, USDC, &me, "latest").await.unwrap();
+        // native -> USDC: one transaction, dry-run by the node before signing
+        let p = prepare_swap(URL, 8453, from, NATIVE, USDC, "0.002").await.unwrap();
+        assert_eq!(p.drafts.len(), 1);
+        run(&p).await;
+        let got = token_balance(&h, URL, USDC, &me, "latest").await.unwrap() - u0;
+        assert!(got >= p.min_out, "got {got} < min {}", p.min_out);
+        println!("ETH->USDC: got {got}, quoted {} min {} via {}", p.out_amount, p.min_out, p.route);
+        // USDC -> ETH: an exact approve, then the swap
+        let half = units(got / 2, 6);
+        let b0 = hex_u128(&rpc(&h, URL, "eth_getBalance", json!([from, "latest"])).await.unwrap()).unwrap();
+        let p = prepare_swap(URL, 8453, from, USDC, NATIVE, &half).await.unwrap();
+        assert_eq!(p.drafts.len(), 2, "approve + swap");
+        run(&p).await;
+        let b1 = hex_u128(&rpc(&h, URL, "eth_getBalance", json!([from, "latest"])).await.unwrap()).unwrap();
+        let fees: u128 = p.drafts.iter().map(|d| d.fee_max).sum();
+        assert!(b1 + fees >= b0 + p.min_out, "ETH came back");
+        // the allowance used up exactly: nothing left to spend
+        let mut a = vec![0xdd, 0x62, 0xed, 0x3e]; a.extend_from_slice(&word(&me)); a.extend_from_slice(&word(&addr_bytes(LIFI).unwrap()));
+        assert_eq!(word_u128(rpc(&h, URL, "eth_call", json!([{ "to": USDC, "data": hex0x(&a) }, "latest"])).await.unwrap().as_str().unwrap()).unwrap(), 0);
+    }
+    #[test]
+    fn vet_refuses_foreign_receiver_and_low_minimum() {
+        let me = addr_bytes(FROM).unwrap();
+        let mut data = vec![0x73, 0x6e, 0xac, 0x0b];
+        for w in [[0u8; 32], word(&[0xc0]), word(&[0x01, 0x00]), word(&me), word(&1000u128.to_be_bytes()), word(&[0x01, 0x60])] { data.extend_from_slice(&w) }
+        let tx = |d: &[u8], to: &str, v: &str| json!({ "chainId": 8453, "to": to, "data": hex0x(d), "value": v, "gasLimit": "0x30000" });
+        assert!(vet_lifi(8453, &me, &tx(&data, LIFI, "0x5"), 5, 1000).is_ok());
+        assert!(vet_lifi(8453, &me, &tx(&data, LIFI, "0x5"), 5, 1001).unwrap_err().contains("минимум"));
+        assert!(vet_lifi(8453, &me, &tx(&data, FROM, "0x5"), 5, 1000).unwrap_err().contains("незнакомый контракт"));
+        assert!(vet_lifi(8453, &me, &tx(&data, LIFI, "0x6"), 5, 1000).unwrap_err().contains("сумма"));
+        assert!(vet_lifi(1, &me, &tx(&data, LIFI, "0x5"), 5, 1000).unwrap_err().contains("сеть"));
+        let mut other = data.clone(); other[4 + 32 * 3 + 31] ^= 1;
+        assert!(vet_lifi(8453, &me, &tx(&other, LIFI, "0x5"), 5, 1000).unwrap_err().contains("чужой"));
+        let mut sel = data.clone(); sel[0] = 0;
+        assert!(vet_lifi(8453, &me, &tx(&sel, LIFI, "0x5"), 5, 1000).unwrap_err().contains("операция"));
     }
 }

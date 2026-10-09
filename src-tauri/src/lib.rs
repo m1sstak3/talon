@@ -25,7 +25,7 @@ pub(crate) struct Session {
     send: Option<Send>,                 // the one transfer waiting for confirmation
 }
 struct Send { id: String, account: String, draft: Draft }
-enum Draft { Sol(solana::Draft), Evm(evm::Draft) }
+enum Draft { Sol(solana::Draft), Evm(evm::Draft), EvmSwap(Vec<evm::Draft>) }
 pub(crate) struct App { pub(crate) session: Mutex<Session>, pub(crate) agent: Mutex<agent::Hub> }
 
 pub(crate) fn vault_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -360,6 +360,40 @@ async fn evm_watch(rpc: String, chain_id: u64, address: String) -> Result<evm::W
 /// the latest operations from the network's explorer (EVM nodes cannot list an address's transactions)
 #[tauri::command]
 async fn evm_history(chain_id: u64, address: String) -> Result<Vec<evm::HTx>, String> { evm::history(chain_id, address.trim()).await }
+/// swaps on EVM networks (LI.FI, vetted by the core): the token list, a live quote, and the plan the confirmation signs
+#[tauri::command]
+async fn evm_swap_tokens(chain_id: u64) -> Result<Vec<evm::SwapToken>, String> { evm::swap_tokens(chain_id).await }
+#[tauri::command]
+async fn evm_swap_quote(chain_id: u64, address: String, input: String, output: String, amount: String) -> Result<evm::SwapQuote, String> {
+    evm::swap_quote(chain_id, address.trim(), input.trim(), output.trim(), &amount).await
+}
+#[tauri::command]
+async fn evm_prepare_swap(app: AppHandle, state: tauri::State<'_, App>, account: String, chain_id: u64, rpc: String, input: String, output: String, amount: String) -> Result<serde_json::Value, String> {
+    // dev builds sign no real network (swaps exist on mainnets only): the core path is tested on a local fork instead
+    if cfg!(debug_assertions) { return Err("обмен — только в установленной программе (в сборке для разработки настоящие сети закрыты)".into()) }
+    let path = vault_path(&app)?;
+    let (a, epoch) = {
+        let s = state.session.lock().unwrap();
+        if !s.unlocked { return Err("кошелёк заблокирован".into()) }
+        (s.accounts.iter().find(|a| a.id == account).cloned().ok_or("нет такого счёта")?, s.epoch)
+    };
+    let from = a.evm.clone().ok_or("у этого счёта нет адреса Ethereum")?;
+    let p = evm::prepare_swap(rpc.trim(), chain_id, &from, input.trim(), output.trim(), &amount).await?;
+    let sw = p.drafts.last().ok_or("пустой обмен")?;
+    let fee: u128 = p.drafts.iter().map(|d| d.fee_max).sum();
+    let id = rand_id();
+    let out = serde_json::json!({
+        "id": id, "open": vault::is_open(&path), "account": a.name, "from": sw.from, "to": sw.to, "network": sw.network, "test": false,
+        "newRecipient": false, "warn": if p.drafts.len() > 1 { Some("Сначала разрешение на ровно эту сумму токена, затем обмен: одно подтверждение, два перевода.") } else { None },
+        "amount": evm::units(sw.amount, sw.decimals as u32), "symbol": sw.symbol, "mint": sw.token, "native": sw.native,
+        "fee": evm::units(fee, 18), "rent": "0", "feeMax": true, "solTotal": evm::units(fee + sw.value, 18),
+        "swap": { "outMint": p.output, "out": evm::units(p.out_amount, p.out_decimals as u32), "min": evm::units(p.min_out, p.out_decimals as u32), "route": p.route, "feeBps": 0 },
+    });
+    let mut s = state.session.lock().unwrap();
+    if !s.unlocked || s.epoch != epoch { return Err("обмен отменён".into()) }
+    s.send = Some(Send { id, account: a.id, draft: Draft::EvmSwap(p.drafts) });
+    Ok(out)
+}
 /// «Всё» for the native coin: the balance minus the most the fee can be
 #[tauri::command]
 async fn evm_max(rpc: String, chain_id: u64, address: String, to: Option<String>) -> Result<String, String> {
@@ -548,9 +582,13 @@ async fn send_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, 
         let s = state.session.lock().unwrap();
         if !s.unlocked { return Err("кошелёк заблокирован".into()) }
         let p = s.send.as_ref().filter(|p| p.id == id).ok_or_else(gone)?;
-        match &p.draft { Draft::Sol(d) => (p.account.clone(), d.message.clone(), None), Draft::Evm(d) => (p.account.clone(), vec![], Some(d.hash())) }
+        match &p.draft {
+            Draft::Sol(d) => (p.account.clone(), d.message.clone(), None),
+            Draft::Evm(d) => (p.account.clone(), vec![], Some(vec![d.hash()])),
+            Draft::EvmSwap(ds) => (p.account.clone(), vec![], Some(ds.iter().map(|d| d.hash()).collect())),
+        }
     };
-    if let Some(hash) = evm_hash { return evm_confirm(app, state, id, pass, account, hash).await }
+    if let Some(hashes) = evm_hash { return evm_confirm(app, state, id, pass, account, hashes).await }
     let on_ledger = state.session.lock().unwrap().accounts.iter().find(|a| a.id == account).filter(|a| a.ledger).map(|a| a.index);
     let sig = match on_ledger {
         // the device shows the transfer and the owner approves it there; the signature is checked against the address below
@@ -580,30 +618,48 @@ async fn send_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, 
 }
 
 /// the EVM half of send_confirm: sign the drafted hash, recover the signer, journal, broadcast, follow
-async fn evm_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>, account: String, hash: [u8; 32]) -> Result<String, String> {
+async fn evm_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>, account: String, hashes: Vec<[u8; 32]>) -> Result<String, String> {
     let gone = || "перевод уже отправлен или отменён".to_string();
-    let (sig, parity) = vault::sign_evm(&vault_path(&app)?, &pass, &account, &hash)?; // wrong password keeps the draft
-    let d = {
+    let mut sigs = vec![];
+    for h in &hashes { sigs.push(vault::sign_evm(&vault_path(&app)?, &pass, &account, h)?) } // wrong password keeps the draft
+    let ds = {
         let mut s = state.session.lock().unwrap();
-        match s.send.take() { Some(Send { id: i, draft: Draft::Evm(d), .. }) if i == id && d.hash() == hash => d, other => { s.send = other; return Err(gone()) } }
+        let same = |ds: &[evm::Draft]| ds.len() == hashes.len() && ds.iter().zip(&hashes).all(|(d, h)| d.hash() == *h);
+        match s.send.take() {
+            Some(Send { id: i, draft: Draft::Evm(d), .. }) if i == id && same(std::slice::from_ref(&d)) => vec![d],
+            Some(Send { id: i, draft: Draft::EvmSwap(ds), .. }) if i == id && same(&ds) => ds,
+            other => { s.send = other; return Err(gone()) }
+        }
     };
-    // the key must be the sender the user saw: recover it from the signature before anything leaves the machine
-    let rs = k256::ecdsa::Signature::from_slice(&sig).map_err(|_| "подпись повреждена".to_string())?;
-    let rec = k256::ecdsa::RecoveryId::from_byte(parity).ok_or("подпись повреждена")?;
-    let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(&hash, &rs, rec).map_err(|_| "подпись повреждена".to_string())?;
-    if vault::evm_address_of(&vk) != d.from { return Err("подпись не сходится с адресом счёта".into()) }
-    let raw = d.signed(&sig, parity);
-    let tx = evm::tx_hash(&raw);
-    let pending = Pending { sig: tx.clone(), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce };
-    pending_edit(&app, |l| l.push(pending.clone())).map_err(|e| format!("перевод не отправлен: {e}"))?;
-    let first = match evm::submit(&d.rpc, &raw).await {
-        evm::Sent::Ok => "sent",
-        evm::Sent::Unknown => "sent-unknown",
-        evm::Sent::Rejected(e) => { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != tx)); return Err(format!("сеть не приняла перевод: {e}")) }
-    };
-    let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": tx, "state": first }));
-    follow(app.clone(), pending);
-    Ok(tx)
+    // every key must be the sender the user saw: recover it from each signature before anything leaves the machine
+    let mut raws = vec![];
+    for ((d, h), (sig, parity)) in ds.iter().zip(&hashes).zip(&sigs) {
+        let rs = k256::ecdsa::Signature::from_slice(sig).map_err(|_| "подпись повреждена".to_string())?;
+        let rec = k256::ecdsa::RecoveryId::from_byte(*parity).ok_or("подпись повреждена")?;
+        let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(h, &rs, rec).map_err(|_| "подпись повреждена".to_string())?;
+        if vault::evm_address_of(&vk) != d.from { return Err("подпись не сходится с адресом счёта".into()) }
+        raws.push(d.signed(sig, *parity));
+    }
+    // journaled before a byte leaves; sent in nonce order (an approve, then the swap that needs it)
+    let pend: Vec<Pending> = ds.iter().zip(&raws).map(|(d, raw)| Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce }).collect();
+    pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("перевод не отправлен: {e}"))?;
+    let mut last = String::new();
+    for (i, (d, raw)) in ds.iter().zip(&raws).enumerate() {
+        let tx = pend[i].sig.clone();
+        let first = match evm::submit(&d.rpc, raw).await {
+            evm::Sent::Ok => "sent",
+            evm::Sent::Unknown => "sent-unknown",
+            evm::Sent::Rejected(e) => {
+                let rest: Vec<String> = pend[i..].iter().map(|p| p.sig.clone()).collect();
+                let _ = pending_edit(&app, |l| l.retain(|x| !rest.contains(&x.sig)));
+                return Err(if i == 0 { format!("сеть не приняла перевод: {e}") } else { format!("разрешение отправлено, а обмен сеть не приняла: {e}. Отзовите разрешение в «Разрешениях», если обмен не нужен") })
+            }
+        };
+        let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": tx, "state": first }));
+        follow(app.clone(), pend[i].clone());
+        last = tx;
+    }
+    Ok(last)
 }
 
 // ---------------------------------------------------------------- agent access and batch requests (agent.rs)
@@ -691,7 +747,7 @@ pub fn run() {
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
             agent_state, agent_access, batch_reject, batch_confirm, fee_state,
-            sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
+            sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Talon");

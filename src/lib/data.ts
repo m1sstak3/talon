@@ -198,6 +198,11 @@ export const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 // any token Jupiter can route (owner 10.10: a list like Phantom's, searchable): today's most traded, or a search
 export interface TokenInfo { id: string; symbol: string; name: string; icon: string | null; decimals: number; verified: boolean; price: number | null; liquidity: number | null }
 export const solTokens = (query = '') => invoke<TokenInfo[]>('sol_tokens', { query })
+// EVM swaps (LI.FI through the core, which vets every transaction): the network's token list, a quote, the confirmation draft
+export const EVM_NATIVE = '0x0000000000000000000000000000000000000000'
+export const evmSwapTokens = (c: Chain) => invoke<Omit<TokenInfo, 'liquidity'>[]>('evm_swap_tokens', { chainId: c.chainId }).then(l => l.map(x => ({ ...x, liquidity: null })))
+export const evmSwapQuote = (c: Chain, address: string, input: string, output: string, amount: string) => invoke<SwapQuote>('evm_swap_quote', { chainId: c.chainId, address, input, output, amount })
+export const evmPrepareSwap = (account: string, c: Chain, input: string, output: string, amount: string) => invoke<Draft>('evm_prepare_swap', { account, chainId: c.chainId, rpc: c.rpc, input, output, amount })
 const iconCache = new Map<string, Promise<string>>()
 export const tokenIcon = (url: string) => { let p = iconCache.get(url); if (!p) { p = invoke<string>('token_icon', { url }); iconCache.set(url, p) } return p }
 export const SWAP_TO = [{ id: 'SOL', sym: 'SOL' }, { id: USDC, sym: 'USDC' }, { id: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', sym: 'USDT' },

@@ -9,7 +9,7 @@
   import {
     chains as seedChains, fmt, short, isAddress, isEvmAddress, addressFor, coreAvailable, cluster,
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
-    readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, type TokenInfo, type Tx, type SwapQuote,
+    readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, evmSwapTokens, evmSwapQuote, evmPrepareSwap, EVM_NATIVE, type TokenInfo, type Tx, type SwapQuote,
     prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, savePinned,
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
@@ -432,14 +432,18 @@
 
   // ---------------------------------------------------------------- swap (Solana mainnet; the core builds, checks and dry-runs the route)
   let swIn = $state('SOL'), swOut = $state(USDC), swAmt = $state(''), swQuote = $state<SwapQuote | null>(null), swErr = $state(''), swBusy = $state(false)
-  const idOf = (c: Card) => (c.id === 'native' ? 'SOL' : c.id)
+  // the native coin's id in a swap: «SOL» on Solana, the zero address on EVM networks (LI.FI's convention)
+  const NATIVE_ID = $derived(chain.kind === 'solana' ? 'SOL' : EVM_NATIVE)
+  const canSwap = $derived(!chain.test && (chain.id === 'solana' || (chain.kind === 'evm' && !chain.id.startsWith('custom-'))))
+  const idOf = (c: Card) => (c.id === 'native' ? NATIVE_ID : c.id)
   const swInCard = $derived(tokens.find(c => idOf(c) === swIn))
   // tokens picked from Jupiter's list: their ticker, name and picture (verified ones name themselves; others carry their mint)
   let picked = $state<Record<string, TokenInfo>>({})
-  const symOf = (id: string) => id === 'SOL' ? 'SOL' : SWAP_TO.find(x => x.id === id)?.sym ?? tokens.find(c => c.id === id && c.verified)?.sym ?? (picked[id]?.verified ? picked[id].symbol : null) ?? short(id) // an unverified ticker never stands alone
+  const symOf = (id: string) => id === NATIVE_ID ? chain.symbol : id === 'SOL' ? 'SOL' : SWAP_TO.find(x => x.id === id)?.sym ?? tokens.find(c => c.id === id && c.verified)?.sym ?? (picked[id]?.verified ? picked[id].symbol : null) ?? short(id) // an unverified ticker never stands alone
   const swIns = $derived(tokens.filter(c => !hidden.includes(c.id)))
   // «Всё» for a swap keeps 0.01 SOL back: new token accounts and the fee come out of SOL
   const swMax = $derived(!swInCard?.raw || swInCard.decimals === undefined ? null
+    : swIn === EVM_NATIVE ? null // an EVM network's coin also pays a gas that moves with every block: the amount is typed
     : exact(swIn === 'SOL' ? BigInt(swInCard.raw) - 10_000_000n : BigInt(swInCard.raw), swInCard.decimals))
   // the last answer for this pair stays on screen (dimmed) while a newer amount is being quoted
   let swLast = $state<SwapQuote | null>(null)
@@ -453,30 +457,41 @@
     clearTimeout(qTimer); swQuote = null; swErr = ''
     if (view !== 'swap' || !a || !(Number(a.replace(',', '.')) > 0)) return
     const g = ++qGen
-    qTimer = window.setTimeout(() => swapQuote(i, o, a).then(q => { if (g === qGen) swQuote = q }, e => { if (g === qGen) swErr = String(e) }), 450)
+    const c = chain, me = myAddress
+    qTimer = window.setTimeout(() => (c.kind === 'solana' ? swapQuote(i, o, a) : evmSwapQuote(c, me, i, o, a)).then(q => { if (g === qGen) swQuote = q }, e => { if (g === qGen) swErr = String(e) }), 450)
   })
-  function openSwap(from = 'SOL') {
-    swIn = from; if (swOut === swIn) swOut = swIn === 'SOL' ? USDC : 'SOL'
-    swAmt = ''; picker = ''
+  // the default «receive» token: USDC of the network (Solana's mint; on EVM networks the one LI.FI lists as verified)
+  const defaultOut = () => chain.kind === 'solana' ? USDC : (topTokens?.find(x => x.symbol === 'USDC' && x.verified)?.id ?? topTokens?.find(x => x.id !== EVM_NATIVE)?.id ?? EVM_NATIVE)
+  let swapNet = ''
+  function openSwap(from = '') {
+    if (swapNet !== chain.id) { topTokens = null; swapNet = chain.id; swOut = chain.kind === 'solana' ? USDC : '' } // another network, another list
+    swIn = from || NATIVE_ID; swAmt = ''; picker = ''
     swap(() => (view = 'swap'))
-    // today's list once: the default «receive» token gets its picture and the picker opens full
-    if (!topTokens) solTokens('').then(l => { topTokens = l; for (const x of l) if (!picked[x.id] && (x.id === swOut || x.verified)) picked[x.id] = x }, () => {})
+    // the list once per network: the default «receive» token gets its picture and the picker opens full
+    const ready = (l: TokenInfo[]) => { topTokens = l; for (const x of l) if (!picked[x.id] && (x.id === swOut || x.verified)) picked[x.id] = x; if (!swOut || swOut === swIn) swOut = swIn === defaultOut() ? NATIVE_ID : defaultOut() }
+    if (!topTokens) (chain.kind === 'solana' ? solTokens('') : evmSwapTokens(chain)).then(ready, () => {})
+    else if (!swOut || swOut === swIn) swOut = swIn === defaultOut() ? NATIVE_ID : defaultOut()
   }
-  function pickIn(id: string) { swIn = id; if (swOut === id) swOut = id === 'SOL' ? USDC : 'SOL' }
+  function pickIn(id: string) { swIn = id; if (swOut === id) swOut = id === NATIVE_ID ? defaultOut() : NATIVE_ID }
   // the token picker (owner 10.10: like Phantom — a list to scroll and search, not four chips)
   let picker = $state<'' | 'in' | 'out'>(''), pickQ = $state(''), pickList = $state<TokenInfo[]>([]), pickBusy = $state(false), pickErr = $state('')
   let topTokens: TokenInfo[] | null = null, pGen = 0, pTimer = 0
   function openPicker(which: 'in' | 'out') { picker = which; pickQ = ''; pickErr = ''; if (which === 'out') searchTokens('') }
   function searchTokens(q: string) {
     clearTimeout(pTimer); const g = ++pGen
-    if (!q.trim() && topTokens) { pickList = topTokens; pickBusy = false; return }
+    if (!q.trim() && topTokens) { pickList = chain.kind === 'solana' ? topTokens : topTokens.slice(0, 120); pickBusy = false; return }
+    if (chain.kind === 'evm') { // the whole list is already here: search it in place
+      const s = q.trim().toLowerCase()
+      pickList = (topTokens ?? []).filter(x => x.symbol.toLowerCase().includes(s) || x.name.toLowerCase().includes(s) || x.id.toLowerCase() === s).slice(0, 120)
+      pickBusy = !topTokens; return
+    }
     pickBusy = true
     pTimer = window.setTimeout(() => solTokens(q).then(l => { if (g !== pGen) return; pickList = l; pickErr = ''; if (!q.trim()) topTokens = l }, e => { if (g === pGen) pickErr = String(e) }).finally(() => { if (g === pGen) pickBusy = false }), q.trim() ? 300 : 0)
   }
   $effect(() => { if (picker === 'out') searchTokens(pickQ) })
   function choose(id: string, info?: TokenInfo) {
     if (info) picked[id] = info
-    if (picker === 'in') pickIn(id); else { swOut = id; if (swIn === id) swIn = id === 'SOL' ? USDC : 'SOL' }
+    if (picker === 'in') pickIn(id); else { swOut = id; if (swIn === id) swIn = id === NATIVE_ID ? defaultOut() : NATIVE_ID }
     picker = ''
   }
   // the token's own picture, fetched by the core (the page loads nothing from the web)
@@ -492,7 +507,7 @@
     if (!acc || acc.watch || !swQuote || sheet || swBusy) return
     const btn = (e as SubmitEvent).submitter ?? undefined
     swBusy = true
-    prepareSwap(acc.id, swIn, swOut, swAmt)
+    ;(chain.kind === 'solana' ? prepareSwap(acc.id, swIn, swOut, swAmt) : evmPrepareSwap(acc.id, chain, swIn, swOut, swAmt))
       .then(d => { d.symbol = symOf(swIn); if (d.swap) d.swap.sym = symOf(swOut); openSheet('send', btn ? { currentTarget: btn } as unknown as Event : undefined, undefined, d) }, e => flash(String(e)))
       .finally(() => (swBusy = false))
   }
@@ -775,7 +790,7 @@
       <div class="acts money appear" style="--d:140ms">
         <button class="btn solid" onclick={() => send()} disabled={!tokens.length || !!acc?.watch}><Icon name="send" />{t('act.send')}</button>
         <button class="btn" onclick={receive} disabled={!myAddress}><Icon name="receive" />{t('act.receive')}</button>
-        {#if chain.id === 'solana' && !acc?.watch}<button class="btn" onclick={() => openSwap()} disabled={!tokens.length}><Icon name="swap" />{t('act.swap')}</button>{/if}
+        {#if canSwap && !acc?.watch}<button class="btn" onclick={() => openSwap()} disabled={!tokens.length}><Icon name="swap" />{t('act.swap')}</button>{/if}
       </div>
       {#if agentReq && !sheet}
         <button class="agentbar appear" style="--d:160ms" onclick={() => agentReq && showBatch(agentReq)}>{t('agent.waiting', { n: agentReq.count })}<span>{t('agent.open')}</span></button>
@@ -819,7 +834,7 @@
         <div class="acts money appear" style="--d:240ms">
           {#if !acc?.watch}<button class="btn solid" onclick={() => send()}><Icon name="send" />{t('act.send')}</button>{/if}
           <button class="btn" onclick={receive}><Icon name="receive" />{t('act.receive')}</button>
-          {#if chain.id === 'solana' && !acc?.watch}<button class="btn" onclick={() => openSwap(idOf(card))}><Icon name="swap" />{t('act.swap')}</button>{/if}
+          {#if canSwap && !acc?.watch}<button class="btn" onclick={() => openSwap(idOf(card))}><Icon name="swap" />{t('act.swap')}</button>{/if}
         </div>
         {#if card.id !== 'native'}<button class="tag appear" style="--d:300ms" onclick={() => toggleHidden(card.id)}>{hidden.includes(card.id) ? t('tok.unhide') : t('tok.hide')}</button>{/if}
       {/key}
@@ -883,7 +898,7 @@
     {:else if view === 'swap'}
       <button class="back" onclick={back}><Icon name="back" />{t('act.back')}</button>
       <h2 class="display t s"><span class="line"><span>{t('swap.title')}</span></span></h2>
-      {#if chain.id !== 'solana'}<p class="note">{t('swap.mainnetOnly')}</p>
+      {#if !canSwap}<p class="note">{t('swap.mainnetOnly')}</p>
       {:else}
         <form class="form" onsubmit={reviewSwap} novalidate>
           <label>
@@ -924,8 +939,8 @@
                 </button>
               {/each}
               {#if picker === 'out'}
-                <p class="mh">{pickQ.trim() ? t('swap.found') : t('swap.top')}</p>
-                {#each pickList.filter(x => !swIns.some(c => idOf(c) === x.id || (c.id === 'native' && x.id === 'So11111111111111111111111111111111111111112'))) as x (x.id)}
+                <p class="mh">{pickQ.trim() ? t('swap.found') : chain.kind === 'solana' ? t('swap.top') : t('swap.all')}</p>
+                {#each pickList.filter(x => !swIns.some(c => idOf(c) === x.id || (c.id === 'native' && (x.id === 'So11111111111111111111111111111111111111112' || x.id === EVM_NATIVE)))) as x (x.id)}
                   <button type="button" class="prow" class:cur={x.id === swOut} onclick={() => choose(x.id, x)}>
                     <span class="ticon"><img use:remoteIcon={x.icon} alt="" /></span>
                     <span><b>{x.verified ? x.symbol : short(x.id)}</b><small class="faint">{x.name}{x.verified ? '' : ` · ${t('swap.notVerified')}`}</small></span>
