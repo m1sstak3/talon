@@ -401,7 +401,7 @@
             <!-- a swap: what leaves, and what the dry run saw arrive (never Jupiter's promise alone) -->
             <p class="amount display">{ru(draft.amount)}<small>{sym}</small></p>
             <p class="hint">меняется на</p>
-            <p class="amount display">≈ {ru(draft.swap.out)}<small>{draft.swap.sym ?? 'ед. токена'}</small></p>
+            <p class="amount display get">≈ {ru(draft.swap.out)}<small>{draft.swap.sym ?? 'ед. токена'}</small></p>
             <!-- owner 10.10: what leaves, what arrives, the floor, the account. No route, fee or network rows, no explanations -->
             <dl class="sum">
               <div><dt>Не меньше</dt><dd class="mono">{ru(draft.swap.min)} {draft.swap.sym ?? ''}</dd></div>
@@ -506,6 +506,7 @@
   .area { padding: 12px 18px; align-items: start; }
   textarea { flex: 1; min-width: 0; background: none; border: 0; outline: none; resize: none; font-size: 14px; line-height: 1.55; color: var(--ink); }
   .field.ok { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .7); }
+  .amount.get { font-size: .72em; opacity: .9; } /* what arrives is a consequence of what leaves: one size down (critique 10.10) */
   .hint { margin: 0; font-size: 14px; line-height: 1.5; color: var(--ink-2); text-wrap: pretty; }
   .picks { display: grid; gap: 4px; }
   .pick { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; padding: 8px 10px; border-radius: 12px; cursor: pointer; transition: background-color 120ms ease; }

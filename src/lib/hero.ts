@@ -208,14 +208,14 @@ const backdropMat = new THREE.ShaderMaterial({
         float s = 1.04 + .015 * sin(t * .4);
         vec2 o = p - cc - vec2(1.5, -.9);
         float d = rbox(o, vec2(3.2, 4.7) * s, .55);
-        float body = smoothstep(1.4, -1.6, d);
+        float body = smoothstep(.12, -.12, d);                     // a crisp plate: lacquer, not a blur
         vec2 q = o / vec2(3.2, 4.7);
         float a = .55 + .35 * sin(t * .42) - lean * .35;          // ~15 s, and with the ring's turn
         float u = dot(q, vec2(cos(a), sin(a)));
-        float streak = exp(-pow((u - .25 * sin(t * .23)) / .16, 2.)) + .45 * exp(-pow((u + .55) / .07, 2.)); // a wide and a thin glint
-        float rim = exp(-pow(d / .9, 2.));
+        float streak = exp(-pow((u - .25 * sin(t * .23)) / .09, 2.)) + .6 * exp(-pow((u + .55) / .04, 2.)); // a wide and a thin glint
+        float rim = exp(-pow(d / .08, 2.));                       // the edge as one hard specular line
         // the network's colour only as a trace in the rim: a coloured veil around the card is banned (brief: no purple haze)
-        e = (bone * (.010 * body + .060 * streak * body) + mix(bone, tint, .3) * (.04 * rim)
+        e = (bone * (.025 * body + .070 * streak * body) + mix(bone, tint, .3) * (.07 * rim)
           + bone * .006 * exp(-pow(max(d, 0.) / 9., 2.))) * docked; // the print belongs to the docked card: none while the deck rests far away
       } else if (theme == 1) {
         // «Стекло»: one pane of black glass stands behind the card, turned away to the left; its thickness shows in a double
@@ -228,7 +228,7 @@ const backdropMat = new THREE.ShaderMaterial({
         vec3 hp = rd * tp;
         vec3 ux = normalize(cross(vec3(0., 1., 0.), n)), uy = cross(n, ux);
         vec2 lp = vec2(dot(hp - c0, ux), dot(hp - c0, uy));
-        float edge = rbox(lp, vec2(3.5, 2.55), .6);
+        float edge = rbox(lp, vec2(3.5, 2.55), .14);                // cut glass corners (a round .6 read as a tablet)
         float front = step(0., tp), inside = smoothstep(.15, -.15, edge) * front;
         vec3 rr = refract(rd, n, 1. / 1.5);
         float through = smoothstep(1.2, -1.2, rbox(p + rr.xy * 4. - cc, vec2(3.2, 4.7), .55));
@@ -242,20 +242,21 @@ const backdropMat = new THREE.ShaderMaterial({
         // the card's turn, and the network's colour lies only on the crest nearest to the card
         vec2 dir1 = normalize(vec2(1., -.35)), dir2 = normalize(vec2(.55, 1.));
         float o1 = dot(p, dir1) - 2. + sin(t * .27) * .8, o2 = dot(p, dir2) + 4. + sin(t * .23 + 1.) * .7;
-        float w1 = 2.6, w2 = 2.1;
+        float w1 = 9., w2 = 11.;
         float h1v = 1.4 * exp(-pow(o1 / w1, 2.)), h2v = .9 * exp(-pow(o2 / w2, 2.));
         vec2 grad = h1v * (-2. * o1 / (w1 * w1)) * dir1 + h2v * (-2. * o2 / (w2 * w2)) * dir2;
-        vec3 nrm = normalize(vec3(-grad * 1.4, 1.));
+        vec3 nrm = normalize(vec3(-grad * 5., 1.));
         float th = 2.2 + lean * .5 + slide * 1.2 + .15 * sin(t * .3);
         vec3 L = normalize(vec3(cos(th), sin(th), 1.1)), Hh = normalize(L + vec3(0., 0., 1.));
-        float spec = pow(max(dot(nrm, Hh), 0.), 70.), dif = max(dot(nrm, L), 0.);
-        e = vec3(.026, .026, .030) * dif * dif + bone * .15 * spec + tint * .06 * spec * G(p, cc, vec2(12., 9.)); // the turn of the tone shows the folds, the crest catches the light
+        float spec = pow(max(dot(nrm, Hh), 0.), 20.), dif = max(dot(nrm, L), 0.);
+        float grain = fbm(p * 2.4) - .5;
+        e = vec3(.07, .07, .078) * dif * dif * (1. + .25 * grain) + bone * .06 * spec + tint * .04 * spec * G(p, cc, vec2(12., 9.)); // the turn of the tone shows the folds, the crest catches the light
       }
       e *= mix(.5 + .5 * smoothstep(-9., -4., p.x), .45, narrow); // the money column stays dark (desktop: left; phone: below)
       // a switch or a send: one ring leaves the docked card and crosses the room
       float r = wave * 26., ring = exp(-pow((length(p * vec2(1., 1.2)) - r) / 1.8, 2.)) * (1. - wave) * step(.0005, wave);
       e += waveC * .14 * ring * (.35 + .65 * room);
-      vec3 c = (.72 + .28 * G(p, vec2(0.), vec2(12., 7.))) * (vec3(.00212, .00212, .00304) + gain * e);
+      vec3 c = (.9 + .1 * G(p, vec2(0.), vec2(12., 7.))) * (vec3(.00212, .00212, .00304) + gain * e); // nearly flat: no spot of its own
       c += vec3(.30, .08, .02) * exp(-dot(p / vec2(4., 4.6), p / vec2(4., 4.6)) * 2.2) * ember;
       gl_FragColor = vec4(c, 1.);
     }`,

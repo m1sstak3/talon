@@ -500,6 +500,8 @@
     load(url)
     return { update: load }
   }
+  // desktop: the search field is ready to type into; a phone keeps the keyboard down until the field is tapped
+  function focusDesktop(el: HTMLInputElement) { if (!matchMedia('(pointer: coarse)').matches) setTimeout(() => el.focus(), 60) }
   const pickMine = $derived(swIns.filter(c => !pickQ.trim() || (c.sym + ' ' + c.name + ' ' + c.id).toLowerCase().includes(pickQ.trim().toLowerCase())))
   function flipSwap() { const i = swIn; swIn = swOut; swOut = i; swAmt = '' }
   function reviewSwap(e: Event) {
@@ -618,6 +620,7 @@
   $effect(() => { if (showTest !== lastShowTest) { lastShowTest = showTest; if (view !== 'locked') hero?.setDeck(netDeck(), chainId, 'glass', 'update') } })
 
   function keys(e: KeyboardEvent) {
+    if (e.key === 'Escape' && picker) { picker = ''; return } // the token list closes, the swap stays
     resetIdle()
     if (e.key === 'Escape' && menu && !sheet) { menu = ''; return }
     if (e.target instanceof HTMLInputElement) return
@@ -904,7 +907,7 @@
           <label>
             <span class="label">{t('swap.give')}</span>
             <span class="field">
-              <button type="button" class="tokbtn" onclick={() => openPicker('in')} aria-haspopup="listbox">{@render swapIcon(swIn)}<b>{symOf(swIn)}</b><Icon name="chevron" size={14} /></button>
+              <button type="button" class="tokbtn" onclick={() => openPicker('in')} aria-haspopup="dialog">{@render swapIcon(swIn)}<b>{symOf(swIn)}</b><Icon name="chevron" size={14} /></button>
               <input bind:value={swAmt} inputmode="decimal" placeholder="0" class="mono" autocomplete="off" />
               {#if swMax && Number(swMax) > 0}<button type="button" class="tag" onclick={() => countInto(v => (swAmt = v), swAmt, swMax!)}>{t('send.max')}</button>{/if}
             </span>
@@ -912,7 +915,7 @@
           </label>
           <div class="swdir"><span class="label">{t('swap.get')}</span><button type="button" class="btn icon" aria-label={t('swap.flip')} onclick={flipSwap}><Icon name="swap" /></button></div>
           <div class="field get">
-            <button type="button" class="tokbtn" onclick={() => openPicker('out')} aria-haspopup="listbox">{@render swapIcon(swOut)}<b>{symOf(swOut)}</b><Icon name="chevron" size={14} /></button>
+            <button type="button" class="tokbtn" onclick={() => openPicker('out')} aria-haspopup="dialog">{@render swapIcon(swOut)}<b>{symOf(swOut)}</b><Icon name="chevron" size={14} /></button>
             <span class="mono getv" class:wait={!swQuote && !!swLast}>{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} />{:else}{swAmt.trim() && !swErr ? '…' : '0'}{/if}</span>
           </div>
           {#if picked[swOut] && !picked[swOut].verified}<span class="err">{t('swap.unverified', { m: short(swOut) })}</span>{/if}
@@ -924,14 +927,14 @@
               </div>
             {/if}
           </dl>
-          {#if swErr}<span class="err">{swErr}</span>{/if}
+          {#if swErr}<span class="err">{netErr(swErr)}</span>{/if}
           <button class="btn solid wide" disabled={!swQuote || swBusy || !!sheet}>{swBusy ? t('send.preparing') : t('swap.review')}</button>
         </form>
         {#if picker}
           <div class="picker panel" role="dialog" aria-label={t('swap.pick')} transition:pop>
-            <div class="phead"><input class="fi" bind:value={pickQ} placeholder={t(picker === 'out' ? 'swap.search' : 'swap.searchMine')} spellcheck="false" autocomplete="off" />
+            <div class="phead"><input class="fi" bind:value={pickQ} use:focusDesktop placeholder={t(picker === 'out' ? 'swap.search' : 'swap.searchMine')} spellcheck="false" autocomplete="off" />
               <button type="button" class="tag sq" onclick={() => (picker = '')} aria-label={t('swap.close')}><Icon name="close" size={14} /></button></div>
-            <div class="plist" role="listbox">
+            <div class="plist">
               {#if pickMine.length}<p class="mh">{t('swap.mine')}</p>{/if}
               {#each pickMine as c (c.id)}
                 <button type="button" class="prow" class:cur={idOf(c) === (picker === 'in' ? swIn : swOut)} onclick={() => choose(idOf(c))}>
@@ -940,10 +943,10 @@
               {/each}
               {#if picker === 'out'}
                 <p class="mh">{pickQ.trim() ? t('swap.found') : chain.kind === 'solana' ? t('swap.top') : t('swap.all')}</p>
-                {#each pickList.filter(x => !swIns.some(c => idOf(c) === x.id || (c.id === 'native' && (x.id === 'So11111111111111111111111111111111111111112' || x.id === EVM_NATIVE)))) as x (x.id)}
+                {#each [...pickList].sort((a, b) => Number(b.verified) - Number(a.verified)).filter(x => !swIns.some(c => idOf(c) === x.id || (c.id === 'native' && (x.id === 'So11111111111111111111111111111111111111112' || x.id === EVM_NATIVE)))) as x (x.id)}
                   <button type="button" class="prow" class:cur={x.id === swOut} onclick={() => choose(x.id, x)}>
                     <span class="ticon"><img use:remoteIcon={x.icon} alt="" /></span>
-                    <span><b>{x.verified ? x.symbol : short(x.id)}</b><small class="faint">{x.name}{x.verified ? '' : ` · ${t('swap.notVerified')}`}</small></span>
+                    <span><b>{x.verified ? x.symbol : short(x.id)}{#if !x.verified}<em class="unv">{t('swap.notVerified')}</em>{/if}</b><small class="faint">{x.name}</small></span>
                     <span class="mono faint">{x.price !== null ? usd(x.price) : ''}</span>
                   </button>
                 {:else}
@@ -1283,6 +1286,7 @@
   .prow { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 12px; padding: 6px 8px; border: 0; border-radius: 14px; background: none; color: var(--ink); text-align: start; cursor: pointer; transition: background-color 100ms ease; }
   .prow:hover, .prow.cur { background: rgb(238 235 229 / .07); }
   .prow b { display: block; font-weight: 500; }
+  .prow .unv { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-style: normal; font-size: 11px; font-weight: 500; color: var(--warn, #f2c38a); box-shadow: inset 0 0 0 1px currentColor; vertical-align: 1px; }
   .prow small { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ticon img:not([src]) { opacity: 0; }
   .ticon img:global(.in) { width: 100%; height: 100%; object-fit: cover; animation: tin 240ms ease both; }
