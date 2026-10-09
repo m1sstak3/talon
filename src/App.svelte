@@ -9,7 +9,7 @@
   import {
     chains as seedChains, fmt, short, isAddress, isEvmAddress, addressFor, coreAvailable, cluster,
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
-    readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, type Tx, type SwapQuote,
+    readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, type TokenInfo, type Tx, type SwapQuote,
     prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, savePinned,
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
@@ -434,10 +434,10 @@
   let swIn = $state('SOL'), swOut = $state(USDC), swAmt = $state(''), swQuote = $state<SwapQuote | null>(null), swErr = $state(''), swBusy = $state(false)
   const idOf = (c: Card) => (c.id === 'native' ? 'SOL' : c.id)
   const swInCard = $derived(tokens.find(c => idOf(c) === swIn))
-  const symOf = (id: string) => id === 'SOL' ? 'SOL' : SWAP_TO.find(x => x.id === id)?.sym ?? tokens.find(c => c.id === id && c.verified)?.sym ?? short(id) // an unverified ticker never stands alone
+  // tokens picked from Jupiter's list: their ticker, name and picture (verified ones name themselves; others carry their mint)
+  let picked = $state<Record<string, TokenInfo>>({})
+  const symOf = (id: string) => id === 'SOL' ? 'SOL' : SWAP_TO.find(x => x.id === id)?.sym ?? tokens.find(c => c.id === id && c.verified)?.sym ?? (picked[id]?.verified ? picked[id].symbol : null) ?? short(id) // an unverified ticker never stands alone
   const swIns = $derived(tokens.filter(c => !hidden.includes(c.id)))
-  const swOutChoices = $derived([...SWAP_TO, ...tokens.filter(c => c.id !== 'native' && !hidden.includes(c.id)).map(c => ({ id: c.id, sym: symOf(c.id) }))]
-    .filter((x, i, a) => a.findIndex(y => y.id === x.id) === i && x.id !== swIn))
   // «Всё» for a swap keeps 0.01 SOL back: new token accounts and the fee come out of SOL
   const swMax = $derived(!swInCard?.raw || swInCard.decimals === undefined ? null
     : exact(swIn === 'SOL' ? BigInt(swInCard.raw) - 10_000_000n : BigInt(swInCard.raw), swInCard.decimals))
@@ -457,10 +457,35 @@
   })
   function openSwap(from = 'SOL') {
     swIn = from; if (swOut === swIn) swOut = swIn === 'SOL' ? USDC : 'SOL'
-    swAmt = ''
+    swAmt = ''; picker = ''
     swap(() => (view = 'swap'))
+    // today's list once: the default «receive» token gets its picture and the picker opens full
+    if (!topTokens) solTokens('').then(l => { topTokens = l; for (const x of l) if (!picked[x.id] && (x.id === swOut || x.verified)) picked[x.id] = x }, () => {})
   }
   function pickIn(id: string) { swIn = id; if (swOut === id) swOut = id === 'SOL' ? USDC : 'SOL' }
+  // the token picker (owner 10.10: like Phantom — a list to scroll and search, not four chips)
+  let picker = $state<'' | 'in' | 'out'>(''), pickQ = $state(''), pickList = $state<TokenInfo[]>([]), pickBusy = $state(false), pickErr = $state('')
+  let topTokens: TokenInfo[] | null = null, pGen = 0, pTimer = 0
+  function openPicker(which: 'in' | 'out') { picker = which; pickQ = ''; pickErr = ''; if (which === 'out') searchTokens('') }
+  function searchTokens(q: string) {
+    clearTimeout(pTimer); const g = ++pGen
+    if (!q.trim() && topTokens) { pickList = topTokens; pickBusy = false; return }
+    pickBusy = true
+    pTimer = window.setTimeout(() => solTokens(q).then(l => { if (g !== pGen) return; pickList = l; pickErr = ''; if (!q.trim()) topTokens = l }, e => { if (g === pGen) pickErr = String(e) }).finally(() => { if (g === pGen) pickBusy = false }), q.trim() ? 300 : 0)
+  }
+  $effect(() => { if (picker === 'out') searchTokens(pickQ) })
+  function choose(id: string, info?: TokenInfo) {
+    if (info) picked[id] = info
+    if (picker === 'in') pickIn(id); else { swOut = id; if (swIn === id) swIn = id === 'SOL' ? USDC : 'SOL' }
+    picker = ''
+  }
+  // the token's own picture, fetched by the core (the page loads nothing from the web)
+  function remoteIcon(img: HTMLImageElement, url: string | null) {
+    const load = (u: string | null) => { if (u) tokenIcon(u).then(d => { img.src = d; img.classList.add('in') }, () => {}) }
+    load(url)
+    return { update: load }
+  }
+  const pickMine = $derived(swIns.filter(c => !pickQ.trim() || (c.sym + ' ' + c.name + ' ' + c.id).toLowerCase().includes(pickQ.trim().toLowerCase())))
   function flipSwap() { const i = swIn; swIn = swOut; swOut = i; swAmt = '' }
   function reviewSwap(e: Event) {
     e.preventDefault()
@@ -625,6 +650,7 @@
 
 {#snippet chainDot(c: Chain)}<span class="cdot" class:test={c.test} class:real={!c.test}></span>{/snippet}
 {#snippet tokIcon(c: Card)}<span class="ticon"><img src={iconURL(c)} alt="" /></span>{/snippet}
+{#snippet swapIcon(id: string)}{#if tokens.find(c => idOf(c) === id)}{@render tokIcon(tokens.find(c => idOf(c) === id)!)}{:else}<span class="ticon"><img use:remoteIcon={picked[id]?.icon ?? null} alt="" /></span>{/if}{/snippet}
 
 {#if view === 'locked'}
   <div class="col lockf">
@@ -863,37 +889,55 @@
           <label>
             <span class="label">{t('swap.give')}</span>
             <span class="field">
+              <button type="button" class="tokbtn" onclick={() => openPicker('in')} aria-haspopup="listbox">{@render swapIcon(swIn)}<b>{symOf(swIn)}</b><Icon name="chevron" size={14} /></button>
               <input bind:value={swAmt} inputmode="decimal" placeholder="0" class="mono" autocomplete="off" />
-              <span class="faint">{symOf(swIn)}</span>
               {#if swMax && Number(swMax) > 0}<button type="button" class="tag" onclick={() => countInto(v => (swAmt = v), swAmt, swMax!)}>{t('send.max')}</button>{/if}
             </span>
             <span class="faint small">{t('send.available', { v: fmt(swInCard?.amount ?? 0, symOf(swIn)) })}</span>
           </label>
-          <div class="chips pills" use:pad={swIns.findIndex(c => idOf(c) === swIn)}>
-            <span class="seg-pad"></span>
-            {#each swIns as c (c.id)}<button type="button" data-seg class="tag" class:cur={swIn === idOf(c)} onclick={() => pickIn(idOf(c))}>{symOf(idOf(c))}</button>{/each}
-          </div>
           <div class="swdir"><span class="label">{t('swap.get')}</span><button type="button" class="btn icon" aria-label={t('swap.flip')} onclick={flipSwap}><Icon name="swap" /></button></div>
-          <div class="chips pills" use:pad={swOutChoices.findIndex(x => x.id === swOut)}>
-            <span class="seg-pad"></span>
-            {#each swOutChoices as x (x.id)}<button type="button" data-seg class="tag" class:cur={swOut === x.id} onclick={() => (swOut = x.id)}>{x.sym}</button>{/each}
+          <div class="field get">
+            <button type="button" class="tokbtn" onclick={() => openPicker('out')} aria-haspopup="listbox">{@render swapIcon(swOut)}<b>{symOf(swOut)}</b><Icon name="chevron" size={14} /></button>
+            <span class="mono getv" class:wait={!swQuote && !!swLast}>{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} />{:else}{swAmt.trim() && !swErr ? '…' : '0'}{/if}</span>
           </div>
+          {#if picked[swOut] && !picked[swOut].verified}<span class="err">{t('swap.unverified', { m: short(swOut) })}</span>{/if}
           <!-- the quote rolls into place; a newer question keeps the last numbers dimmed instead of a blank (M-33, M-34) -->
           <dl class="sum" class:wait={!swQuote && !!swLast}>
-            <div class="net"><dt>{t('send.net')}</dt><dd class="emb">{chain.name} · {t('net.real')}</dd></div>
-            <div><dt>{t('swap.youGet')}</dt><dd class="mono">{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} /> {symOf(swOut)}{:else}{swAmt.trim() && !swErr ? '…' : '—'}{/if}</dd></div>
             {#if swShown}
               <div class="more" transition:slide={{ duration: still() ? 0 : 320, easing: cubicOut }}>
                 <div><dt>{t('swap.min')}</dt><dd class="mono"><Roll text={fmt(Number(swShown.min_out))} /> {symOf(swOut)}</dd></div>
-                <div><dt>{t('swap.route')}</dt><dd>{swShown.route}</dd></div>
-                <div><dt>{t('swap.fee')}</dt><dd>{swShown.fee_bps ? t('swap.feeOn', { v: (swShown.fee_bps / 100).toLocaleString('ru-RU') }) : t('swap.feeOff')}</dd></div>
               </div>
             {/if}
           </dl>
           {#if swErr}<span class="err">{swErr}</span>{/if}
           <button class="btn solid wide" disabled={!swQuote || swBusy || !!sheet}>{swBusy ? t('send.preparing') : t('swap.review')}</button>
-          <p class="faint small">{t('swap.note')} {t('swap.privacy')}</p>
         </form>
+        {#if picker}
+          <div class="picker panel" role="dialog" aria-label={t('swap.pick')} transition:pop>
+            <div class="phead"><input class="fi" bind:value={pickQ} placeholder={t(picker === 'out' ? 'swap.search' : 'swap.searchMine')} spellcheck="false" autocomplete="off" />
+              <button type="button" class="tag sq" onclick={() => (picker = '')} aria-label={t('swap.close')}><Icon name="close" size={14} /></button></div>
+            <div class="plist" role="listbox">
+              {#if pickMine.length}<p class="mh">{t('swap.mine')}</p>{/if}
+              {#each pickMine as c (c.id)}
+                <button type="button" class="prow" class:cur={idOf(c) === (picker === 'in' ? swIn : swOut)} onclick={() => choose(idOf(c))}>
+                  {@render tokIcon(c)}<span><b>{c.verified ? c.sym : short(c.id)}</b><small class="faint">{c.name}</small></span><span class="mono faint">{fmt(c.amount)}</span>
+                </button>
+              {/each}
+              {#if picker === 'out'}
+                <p class="mh">{pickQ.trim() ? t('swap.found') : t('swap.top')}</p>
+                {#each pickList.filter(x => !swIns.some(c => idOf(c) === x.id || (c.id === 'native' && x.id === 'So11111111111111111111111111111111111111112'))) as x (x.id)}
+                  <button type="button" class="prow" class:cur={x.id === swOut} onclick={() => choose(x.id, x)}>
+                    <span class="ticon"><img use:remoteIcon={x.icon} alt="" /></span>
+                    <span><b>{x.verified ? x.symbol : short(x.id)}</b><small class="faint">{x.name}{x.verified ? '' : ` · ${t('swap.notVerified')}`}</small></span>
+                    <span class="mono faint">{x.price !== null ? usd(x.price) : ''}</span>
+                  </button>
+                {:else}
+                  <p class="faint small">{pickBusy ? t('swap.searching') : pickErr ? netErr(pickErr) : t('swap.none')}</p>
+                {/each}
+              {/if}
+            </div>
+          </div>
+        {/if}
       {/if}
 
     {:else if view === 'history'}
@@ -1011,9 +1055,9 @@
           <div class="seg small" use:pad={THEMES.indexOf(theme)}><span class="seg-pad"></span>{#each THEMES as v}<button data-seg class:cur={theme === v} onclick={() => setTheme(v)}>{THEME_NAME[v]}</button>{/each}</div>
         </div>{/if}
         <label class="set"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
-        {#if pinned.length}<div class="set"><span>{t('set.nets')}<small>{t('set.netsNote')}</small></span>
+        {#if pinned.length}<div class="set"><span>{t('set.nets')}</span>
           <div class="chips">{#each chainList.filter(c => pinned.includes(c.id)) as c (c.id)}<button class="tag" onclick={() => unpin(c.id)} aria-label={`${c.name}: убрать`}>{c.name}<Icon name="close" size={12} /></button>{/each}</div></div>{/if}
-        <label class="set"><span>{t('set.usd')}<small>{t('set.usdNote')}</small></span><input type="checkbox" class="sw" checked={showUsd} onchange={e => setShowUsd(e.currentTarget.checked)} /></label>
+        <label class="set"><span>{t('set.usd')}</span><input type="checkbox" class="sw" checked={showUsd} onchange={e => setShowUsd(e.currentTarget.checked)} /></label>
         <div class="set"><span>{t('set.pass')}<small>{vaultOpen ? t('set.passOff') : t('set.passOn')}</small></span>
           <button class="btn small" onclick={e => openSheet('password', e)} disabled={!!sheet}>{vaultOpen ? t('set.passSet') : t('set.passChange')}</button>
         </div>
@@ -1025,7 +1069,6 @@
           <div class="seg small" use:pad={[5, 15, 30].indexOf(autolock)}><span class="seg-pad"></span>{#each [5, 15, 30] as m}<button data-seg class:cur={autolock === m} onclick={() => setAutolock(m)}>{t('set.min', { n: m })}</button>{/each}</div>
         </div>{/if}
       </div>
-      <p class="faint small privacy">{t('set.privacyNote')}</p>
     {/if}
   </main>
 {/if}
@@ -1211,6 +1254,24 @@
   .rows .dim { opacity: .5; }
   .hid { margin-top: 10px; }
   .swdir { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+  .tokbtn { display: inline-flex; align-items: center; gap: 8px; flex: none; min-height: 40px; padding: 0 10px 0 4px; border: 0; border-radius: 999px; background: rgb(238 235 229 / .06); color: var(--ink); cursor: pointer; transition: background-color 160ms ease; }
+  .tokbtn:hover { background: rgb(238 235 229 / .11); }
+  .tokbtn .ticon { width: 30px; height: 30px; }
+  .tokbtn .ticon img { width: 18px; height: 18px; }
+  .field.get { justify-content: space-between; }
+  .getv { font-size: 18px; transition: opacity 200ms ease; }
+  .getv.wait { opacity: .45; }
+  .picker { position: absolute; left: 0; right: 8px; top: 120px; bottom: 24px; display: grid; grid-template-rows: auto 1fr; gap: 8px; padding: 12px; z-index: 30; }
+  .phead { display: flex; gap: 8px; align-items: center; }
+  .phead .fi { flex: 1; }
+  .plist { overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 2px; }
+  .prow { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 12px; padding: 6px 8px; border: 0; border-radius: 14px; background: none; color: var(--ink); text-align: start; cursor: pointer; transition: background-color 100ms ease; }
+  .prow:hover, .prow.cur { background: rgb(238 235 229 / .07); }
+  .prow b { display: block; font-weight: 500; }
+  .prow small { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ticon img:not([src]) { opacity: 0; }
+  .ticon img:global(.in) { width: 100%; height: 100%; object-fit: cover; animation: tin 240ms ease both; }
+  @keyframes tin { from { opacity: 0; } }
   .tx .what { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
   .tx .what b { font-weight: 400; color: var(--ink); white-space: pre; }
   .tx .inb { font-weight: 400; color: var(--ink); white-space: pre; font-size: 14px; }
@@ -1231,14 +1292,10 @@
   .sum dd { margin: 0; }
   .sum .emb { color: var(--ember); }
   .sum.wait dd { opacity: .45; transition: opacity 200ms ease; }
-  .sum.wait .net dd { opacity: 1; }
   .lead { font-size: 15px; margin-bottom: 6px !important; }
   .lead.warn { color: var(--ember); }
   .sum dd { transition: opacity 300ms ease; }
   .sum .more { display: grid; gap: 6px; justify-content: stretch; }
-  .pills { position: relative; }
-  .pills > .tag { position: relative; z-index: 1; background: none; }
-  .pills > :global(.seg-pad) { background: rgb(238 235 229 / .1); }
   .wide { justify-content: center; width: 100%; margin-top: 4px; }
 
   .mine { margin-top: 8px; }
@@ -1262,7 +1319,6 @@
   .sw::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink-2); transition: translate 260ms var(--ease), background-color 220ms ease; }
   .sw:checked { background: var(--ink); }
   .sw:checked::after { translate: 16px 0; background: var(--stage); }
-  .privacy { margin-top: 18px !important; max-width: 46ch; }
   .agentbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; margin-top: 18px; padding: 12px 16px; border: 0; border-radius: 14px; background: rgb(238 235 229 / .06); box-shadow: inset 0 0 0 1px rgb(238 235 229 / .18); color: var(--ink); font-size: 14px; text-align: start; cursor: pointer; transition: background-color 300ms ease; }
   .agentbar:hover { background: rgb(238 235 229 / .1); }
   .agentbar span { color: var(--ink-2); }

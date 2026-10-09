@@ -736,6 +736,52 @@ fn route_of(q: &Value) -> String {
 }
 
 /// a live quote for the swap screen; nothing is built or kept
+// ---------------------------------------------------------------- tokens to swap into (owner 10.10: «as many as possible, like Phantom»)
+/// one token of Jupiter's index, trimmed to what the picker shows. `verified` = Jupiter's own verification; anything else
+/// is shown with its mint and a warning, never as the name it gave itself alone
+#[derive(Serialize)]
+pub struct TokenInfo { id: String, symbol: String, name: String, icon: Option<String>, decimals: u8, verified: bool, price: Option<f64>, liquidity: Option<f64> }
+fn token_info(v: &Value) -> Option<TokenInfo> {
+    let id = v["id"].as_str().filter(|m| valid_address(m))?.to_string();
+    let clip = |s: &str, n: usize| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>();
+    Some(TokenInfo {
+        symbol: clip(v["symbol"].as_str()?, 12), name: clip(v["name"].as_str().unwrap_or(""), 40),
+        icon: v["icon"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string),
+        decimals: v["decimals"].as_u64().filter(|d| *d <= 18)? as u8,
+        verified: v["isVerified"].as_bool() == Some(true) || v["tags"].as_array().is_some_and(|t| t.iter().any(|x| x == "verified")),
+        price: v["usdPrice"].as_f64().filter(|p| p.is_finite() && *p > 0.0), liquidity: v["liquidity"].as_f64(),
+        id,
+    })
+}
+/// the tokens people trade most today (empty query) or a search by name, ticker or mint. What leaves: the query text.
+/// Thin pools (< $10k) are dropped unless the query is that exact mint: a fake can be pushed to any price there
+pub async fn tokens(query: &str) -> Result<Vec<TokenInfo>, String> {
+    let q = query.trim();
+    let http = client()?;
+    let url = if q.is_empty() { "https://lite-api.jup.ag/tokens/v2/toporganicscore/24h?limit=100".to_string() }
+        else { format!("https://lite-api.jup.ag/tokens/v2/search?query={}", q.chars().filter(|c| c.is_ascii_alphanumeric() || " .-_$".contains(*c)).take(60).collect::<String>().replace(' ', "%20")) };
+    let v = get_json(&http, &url).await?;
+    Ok(v.as_array().into_iter().flatten().filter_map(token_info)
+        .filter(|t| t.id == q || t.liquidity.unwrap_or(0.0) >= 10_000.0).collect())
+}
+/// a token's picture for the picker, fetched by the core (the page may load nothing from the web): https only, an image,
+/// at most 96 KB; kept in memory for the session
+pub async fn token_icon(url: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+    if let Some(d) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(url).cloned()) { return Ok(d) }
+    if !url.starts_with("https://") || url.len() > 400 { return Err("not an icon url".into()) }
+    let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build().map_err(|e| e.to_string())?;
+    let r = http.get(url).send().await.map_err(|_| "icon".to_string())?;
+    let ct = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    if !ct.starts_with("image/") || ct.contains("svg") { return Err("not an image".into()) } // no SVG: it can carry script
+    let b = r.bytes().await.map_err(|_| "icon".to_string())?;
+    if b.len() > 96 * 1024 { return Err("icon too big".into()) }
+    let d = format!("data:{};base64,{}", ct.split(';').next().unwrap_or("image/png"), base64::engine::general_purpose::STANDARD.encode(&b));
+    CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(url.to_string(), d.clone());
+    Ok(d)
+}
+
 pub async fn swap_quote(input: &str, output: &str, amount: &str, c: Cluster) -> Result<Quote, String> {
     if !matches!(c, Cluster::Mainnet) { return Err("обмен работает только в основной сети".into()) }
     if input == output { return Err("выберите другой токен".into()) }

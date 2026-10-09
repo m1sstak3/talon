@@ -52,7 +52,7 @@
   // the plate and the content window grow together, so nothing shows past the plate's edge mid-unfold (owner 09.10)
   let vh = $state(innerHeight)
   // the top edge sits near the centre and rises (with the growth) only as far as a tall step needs to fit the window
-  const top = $derived(Math.max(56, Math.min(vh / 2 - 190, vh - h - 24)))
+  const top = $derived(Math.max(24, Math.round((vh - h) / 2))) // centred (owner 10.10: it sat low); a tall step starts near the top
   const tall = $derived(h > vh - 24 - top)
 
   // form state lives only here and is wiped on close
@@ -291,13 +291,13 @@
         {:else if step === 'keys' && keys}
           <p class="hint warn">Кто увидит эти слова или ключ, тот заберёт деньги.</p>
           {#if keys.phrase}
-            <span class="label">Секретная фраза: Phantom, MetaMask и другие кошельки</span>
+            <span class="label">Секретная фраза</span>
             <ol class="words">{#each keys.phrase.split(' ') as w, i (i)}<li style="--i:{i}"><span class="n">{i + 1}</span><span class="mono">{w}</span></li>{/each}</ol>
             <button class="cp" type="button" onclick={() => copySecret('words', keys!.phrase!)}>{copiedWhat === 'words' ? 'Скопировано' : 'Скопировать слова'}</button>
-          {/if}
-          <div class="key"><span class="label">Закрытый ключ Solana (Phantom, Solflare)</span><span class="mono keyv">{keys.solana}</span>
+          {:else}<p class="hint">У этого счёта нет 12 слов: он добавлен закрытым ключом.</p>{/if}
+          <div class="key"><span class="label">Закрытый ключ Solana</span><span class="mono keyv">{keys.solana}</span>
             <button class="cp" type="button" onclick={() => copySecret('sol', keys!.solana)}>{copiedWhat === 'sol' ? 'Скопировано' : 'Скопировать ключ'}</button></div>
-          {#if keys.evm}<div class="key"><span class="label">Закрытый ключ Ethereum и похожих сетей (MetaMask)</span><span class="mono keyv">{keys.evm}</span>
+          {#if keys.evm}<div class="key"><span class="label">Закрытый ключ Ethereum</span><span class="mono keyv">{keys.evm}</span>
             <button class="cp" type="button" onclick={() => copySecret('evm', keys!.evm!)}>{copiedWhat === 'evm' ? 'Скопировано' : 'Скопировать ключ'}</button></div>{/if}
           <p class="hint">{clearIn ? `Скопированное сотрётся из буфера через ${clearIn} с и не попадёт в журнал буфера Windows.` : 'Скопированное сотрётся из буфера через полминуты.'}</p>
           <div class="acts"><button class="btn solid go" type="button" onclick={() => close(false)}>Готово</button></div>
@@ -402,17 +402,12 @@
             <p class="amount display">{ru(draft.amount)}<small>{sym}</small></p>
             <p class="hint">меняется на</p>
             <p class="amount display">≈ {ru(draft.swap.out)}<small>{draft.swap.sym ?? 'ед. токена'}</small></p>
+            <!-- owner 10.10: what leaves, what arrives, the floor, the account. No route, fee or network rows, no explanations -->
             <dl class="sum">
               <div><dt>Не меньше</dt><dd class="mono">{ru(draft.swap.min)} {draft.swap.sym ?? ''}</dd></div>
-              <div><dt>Маршрут</dt><dd>{draft.to}</dd></div>
-              {#if draft.mint}<div><dt>Отдаёте токен</dt><dd class="mono addr">{draft.mint}</dd></div>{/if}
-              <div><dt>Получаете токен</dt><dd class="mono addr">{draft.swap.outMint}</dd></div>
-              <div><dt>Комиссия сети</dt><dd class="mono">{ru(draft.fee)} SOL</dd></div>
-              <div><dt>Комиссия кошелька</dt><dd>{draft.swap.feeBps ? `${(draft.swap.feeBps / 100).toLocaleString('ru-RU')}% от обмена` : 'нет'}</dd></div>
-              <div><dt>Со счёта</dt><dd>{draft.account}<br /><span class="mono addr faint">{draft.from}</span></dd></div>
-              <div><dt>Сеть</dt><dd class="warn">{draft.network} · настоящие деньги</dd></div>
+              {#if !draft.swap.sym}<div><dt>Получаете токен</dt><dd class="mono addr">{draft.swap.outMint}</dd></div>{/if}
+              <div><dt>Со счёта</dt><dd>{draft.account}</dd></div>
             </dl>
-            <p class="hint">Сеть уже прогнала этот обмен вхолостую: столько и придёт, если курс не уйдёт ниже минимума. Иначе обмен не пройдёт, а деньги останутся на месте.</p>
           {:else}
           <p class="amount display">{ru(draft.amount)}<small>{sym}</small></p>
           <dl class="sum">

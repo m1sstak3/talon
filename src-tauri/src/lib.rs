@@ -494,6 +494,11 @@ async fn fee_state() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "owner": solana::FEE_OWNER, "bps": solana::FEE_BPS, "missing": missing.len() }))
 }
 
+/// tokens to swap into: today's most traded (empty query) or a search
+#[tauri::command]
+async fn sol_tokens(query: String) -> Result<Vec<solana::TokenInfo>, String> { solana::tokens(&query).await }
+#[tauri::command]
+async fn token_icon(url: String) -> Result<String, String> { solana::token_icon(&url).await }
 /// live quote for the swap screen (nothing kept)
 #[tauri::command]
 async fn sol_swap_quote(input: String, output: String, amount: String, cluster: String) -> Result<solana::Quote, String> {
@@ -686,7 +691,7 @@ pub fn run() {
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
             agent_state, agent_access, batch_reject, batch_confirm, fee_state,
-            sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, evm_watch, evm_history, evm_max, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
+            sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Talon");

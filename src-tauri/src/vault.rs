@@ -165,6 +165,17 @@ pub fn evm_key(phrase: &str, index: u32) -> Zeroizing<[u8; 32]> {
     k.copy_from_slice(&i[..32]);
     k
 }
+/// an EVM key for an account imported from a Solana key (owner 10.10: every account on every network): derived from that
+/// key, so re-importing the same Solana key into Talon gives the same Ethereum address. Other wallets cannot rebuild it
+/// from the Solana key: export shows it as its own key. HMAC-SHA512 with a fixed label; retried in the 2^-128 case of an
+/// invalid scalar.
+pub fn evm_from_solana(seed: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let mut i = hmac512(b"talon/evm-from-solana-key/v1", &[seed.as_ref()]);
+    while k256::SecretKey::from_slice(&i[..32]).is_err() { i = hmac512(b"talon/evm-from-solana-key/v1", &[i.as_ref()]) }
+    let mut k = Zeroizing::new([0u8; 32]);
+    k.copy_from_slice(&i[..32]);
+    k
+}
 pub fn evm_address(key: &[u8; 32]) -> String {
     let pk = k256::SecretKey::from_slice(key).unwrap().public_key().to_encoded_point(false);
     let h = Keccak256::digest(&pk.as_bytes()[1..]);
@@ -189,7 +200,10 @@ fn checksum(lower: &str) -> String {
 fn account(w: &Wallet, index: u32, name: &str) -> Account {
     let (solana, evm) = match (&w.phrase, &w.sol_key) {
         (Some(p), _) => (sol_address(&solana_key(p, index)), Some(evm_address(&evm_key(p, index)))),
-        (None, Some(k)) => (sol_address(&parse_sol_key(k).expect("stored key is valid")), w.evm_key.as_deref().map(|e| evm_address(&parse_evm_key(e).expect("stored key is valid")))),
+        (None, Some(k)) => {
+            let seed = parse_sol_key(k).expect("stored key is valid");
+            (sol_address(&seed), Some(match w.evm_key.as_deref() { Some(e) => evm_address(&parse_evm_key(e).expect("stored key is valid")), None => evm_address(&evm_from_solana(&seed)) }))
+        }
         _ => (w.ledger.clone().expect("wallet without a key"), None),
     };
     Account { id: format!("{}/{index}", w.id), wallet: w.id.clone(), name: name.trim().chars().take(40).collect(), index, solana, evm, ledger: w.ledger.is_some() }
@@ -234,11 +248,16 @@ fn open(text: &str, pass: &str) -> Result<(Secrets, Vec<Account>, Kdf), String> 
         .map_err(err("неверный пароль"))?);
     let sec: Secrets = serde_json::from_slice(&plain).map_err(err("хранилище повреждено"))?;
     // the stored public list must match the keys: a swapped address is how money gets stolen
-    for a in &f.h.accounts {
+    let mut accs = f.h.accounts.clone();
+    for a in accs.iter_mut() {
         let w = sec.wallets.iter().find(|w| w.id == a.wallet).ok_or("хранилище повреждено: нет кошелька")?;
-        if account(w, a.index, &a.name) != *a { return Err("хранилище повреждено: адрес не совпадает с ключом".into()) }
+        let fresh = account(w, a.index, &a.name);
+        // written before 0.2: a Solana-key account had no EVM address; the only difference allowed is that one gaining it
+        let upgrade = a.evm.is_none() && w.phrase.is_none() && w.evm_key.is_none() && w.ledger.is_none() && Account { evm: None, ..fresh.clone() } == *a;
+        if fresh != *a && !upgrade { return Err("хранилище повреждено: адрес не совпадает с ключом".into()) }
+        *a = fresh;
     }
-    Ok((sec, f.h.accounts, f.h.kdf))
+    Ok((sec, accs, f.h.kdf))
 }
 
 /// write via temp file, prove it decrypts, keep the previous file as .prev, then swap in
@@ -334,7 +353,12 @@ pub fn create(path: &Path, src: Source, name: &str, pass: &str, kdf: Kdf) -> Res
 
 /// check the passphrase (unlock). Secrets are dropped (wiped) before returning.
 pub fn unlock(path: &Path, pass: &str) -> Result<Vec<Account>, String> {
-    let (_sec, accs, _) = open(&read(path)?, pass)?;
+    let (sec, accs, kdf) = open(&read(path)?, pass)?;
+    // an older file: the derived EVM addresses go into its public list now, so they show before unlocking next time
+    if accs != accounts(path)? {
+        let _w = WRITE.lock().unwrap();
+        write_proven(path, &seal(&sec, pass, kdf, accs.clone())?, pass)?;
+    }
     Ok(accs)
 }
 
@@ -424,7 +448,7 @@ pub fn sign_evm(path: &Path, pass: &str, id: &str, hash: &[u8; 32]) -> Result<([
     let key = match (&w.phrase, &w.evm_key) {
         (Some(p), _) => evm_key(p, a.index),
         (None, Some(k)) => parse_evm_key(k)?,
-        _ => return Err("у этого счёта нет ключа Ethereum".into()),
+        _ => match &w.sol_key { Some(s) => evm_from_solana(&*parse_sol_key(s)?), None => return Err("у этого счёта нет ключа Ethereum".into()) },
     };
     let sk = k256::ecdsa::SigningKey::from_slice(key.as_ref()).map_err(|_| "ключ Ethereum повреждён".to_string())?; // zeroizes on drop
     let (sig, rec) = sk.sign_prehash_recoverable(hash).map_err(|_| "не удалось подписать".to_string())?;
@@ -461,7 +485,13 @@ pub fn export(path: &Path, pass: &str, id: &str) -> Result<Export, String> {
                 Some(s)
             }
             (None, Some(k)) => Some(Zeroizing::new(k.clone())),
-            _ => None,
+            _ => w.sol_key.as_deref().and_then(|s| parse_sol_key(s).ok()).map(|seed| {
+                use std::fmt::Write;
+                let mut s = Zeroizing::new(String::with_capacity(66));
+                s.push_str("0x");
+                for b in evm_from_solana(&seed).iter() { let _ = write!(s, "{b:02x}"); }
+                s
+            }),
         },
     })
 }
@@ -545,7 +575,8 @@ mod tests {
         let accs = add_wallet(&p, Source::SolanaKey(&key), "Импорт", pass).unwrap();
         assert_eq!(accs.len(), 3);
         assert_eq!(accs[2].solana, "BLeUXTx9thHGT7VJUtF9vHEmfMDgW1nnKZ9UVer2CoLX");
-        assert!(accs[2].evm.is_none());
+        let derived = evm_address(&evm_from_solana(&seed));
+        assert_eq!(accs[2].evm.as_deref(), Some(derived.as_str()), "a Solana-key account gets an EVM address derived from its key");
         assert!(add_wallet(&p, Source::SolanaKey(&key), "again", pass).is_err());
         assert!(add_account(&p, &accs[2].wallet, "x", pass).is_err());
         let accs = rename(&p, &accs[1].id, "Сбережения", pass).unwrap();
@@ -564,8 +595,20 @@ mod tests {
         assert_eq!(sol_address(&parse_sol_key(&e.solana).unwrap()), accs[1].solana);
         let k: [u8; 32] = (0..32).map(|i| u8::from_str_radix(&e.evm.as_ref().unwrap()[2 + 2 * i..4 + 2 * i], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
         assert_eq!(Some(evm_address(&k)), accs[1].evm);
-        let e = export(&p, pass, &accs[2].id).unwrap(); // imported key: no phrase, no EVM
-        assert!(e.phrase.is_none() && e.evm.is_none());
+        let e = export(&p, pass, &accs[2].id).unwrap(); // imported key: no phrase; the derived EVM key
+        assert!(e.phrase.is_none());
+        let k: [u8; 32] = (0..32).map(|i| u8::from_str_radix(&e.evm.as_ref().unwrap()[2 + 2 * i..4 + 2 * i], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
+        assert_eq!(evm_address(&k), derived);
+        // an older file (no EVM address in its list for this account) opens, gains it and is rewritten once
+        {
+            let (sec, mut list, kdf) = open(&read(&p).unwrap(), pass).unwrap();
+            list[2].evm = None;
+            let _w = WRITE.lock().unwrap();
+            write_proven(&p, &seal(&sec, pass, kdf, list).unwrap(), pass).unwrap();
+        }
+        assert!(accounts(&p).unwrap()[2].evm.is_none());
+        assert_eq!(unlock(&p, pass).unwrap()[2].evm.as_deref(), Some(derived.as_str()));
+        assert_eq!(accounts(&p).unwrap()[2].evm.as_deref(), Some(derived.as_str()), "written back");
         assert_eq!(sol_address(&parse_sol_key(&e.solana).unwrap()), accs[2].solana);
         // an EVM key added to the imported account: address shown, key exported, phrase wallets refuse, twice refused
         let ek = format!("0x{}", "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318");

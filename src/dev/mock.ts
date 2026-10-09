@@ -41,6 +41,13 @@ export function install(kind: string) {
         { mint: '8wnFf4DemoSpamMint111111111111111111111111111', amount: '777000000', decimals: 6, token2022: true, name: 'MICROSOFT AI', symbol: 'MICROAI' }] }
       case 'evm_watch': await wait(300); return { wei: a.chainId === 8453 ? '420000000000000000' : '0', native: 'ETH', tokens: a.chainId === 8453 ? [{ contract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', amount: '125500000', decimals: 6 }] : [] }
       case 'evm_history': await wait(400); if (a.chainId !== 8453) throw 'для этой сети история пока не собирается'; return [{ sig: '0x' + 'ab'.repeat(32), time: 1791400000, ok: true, fee: '42000000000000', peer: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8', moves: [{ mint: null, amount: '50000000000000000', decimals: 18, incoming: false, sym: 'ETH' }] }, { sig: '0x' + 'cd'.repeat(32), time: 1791300000, ok: true, fee: null, peer: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8', moves: [{ mint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', amount: '25000000', decimals: 6, incoming: true, sym: 'USDC' }] }]
+      case 'sol_tokens': await wait(300); return [
+        { id: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', symbol: 'USDC', name: 'USD Coin', icon: null, decimals: 6, verified: true, price: 1, liquidity: 1e9 },
+        { id: 'DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT', symbol: 'USDe', name: 'USDe', icon: null, decimals: 9, verified: true, price: 0.9993, liquidity: 7e6 },
+        { id: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', symbol: 'JUP', name: 'Jupiter', icon: null, decimals: 6, verified: true, price: 0.42, liquidity: 5e7 },
+        { id: 'FakeUsdcMint11111111111111111111111111111111', symbol: 'USDC', name: 'USD Coin', icon: null, decimals: 6, verified: false, price: 1, liquidity: 2e4 },
+      ].filter(x => !a.query || (x.symbol + x.name).toLowerCase().includes(a.query.toLowerCase()))
+      case 'token_icon': throw 'no icons in the mock'
       case 'evm_max': await wait(300); return '0.41998'
       case 'sol_grants': await wait(400); return [{ account: 'DemoTokenAcct1111111111111111111111111111111', mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', delegate: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', amount: '18446744073709551615', decimals: 6 }]
       case 'evm_allowances': await wait(400); return a.chainId === 8453 ? [{ token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', spender: '0x000000000022D473030F116dDEE9F6B43aC78BA3', name: 'Permit2 (Uniswap)', amount: '', unlimited: true }] : []

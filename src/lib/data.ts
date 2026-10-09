@@ -195,6 +195,11 @@ export interface SwapQuote { in_amount: string; out_amount: string; min_out: str
 export const swapQuote = (input: string, output: string, amount: string) => invoke<SwapQuote>('sol_swap_quote', { input, output, amount, cluster: 'mainnet' })
 export const prepareSwap = (account: string, input: string, output: string, amount: string) => invoke<Draft>('sol_prepare_swap', { account, input, output, amount, cluster: 'mainnet' })
 export const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+// any token Jupiter can route (owner 10.10: a list like Phantom's, searchable): today's most traded, or a search
+export interface TokenInfo { id: string; symbol: string; name: string; icon: string | null; decimals: number; verified: boolean; price: number | null; liquidity: number | null }
+export const solTokens = (query = '') => invoke<TokenInfo[]>('sol_tokens', { query })
+const iconCache = new Map<string, Promise<string>>()
+export const tokenIcon = (url: string) => { let p = iconCache.get(url); if (!p) { p = invoke<string>('token_icon', { url }); iconCache.set(url, p) } return p }
 export const SWAP_TO = [{ id: 'SOL', sym: 'SOL' }, { id: USDC, sym: 'USDC' }, { id: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', sym: 'USDT' },
   { id: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', sym: 'JUP' }, { id: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', sym: 'BONK' }]
 /** "+1,25 SOL" / "−0,5 USDC" for one move */
