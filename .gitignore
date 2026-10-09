@@ -1,0 +1,9 @@
+node_modules
+dist
+.impeccable/review
+.playwright-mcp
+src-tauri/target
+*.log
+*.blend1
+.review/
+dist-release

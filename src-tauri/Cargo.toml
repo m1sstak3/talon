@@ -1,0 +1,62 @@
+[package]
+name = "talon"
+version = "0.2.0"
+description = "A multi-chain wallet that keeps its keys on your device"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "talon_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.1", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+bs58 = "0.5"
+base64 = "0.22"
+bip39 = { version = "2", features = ["rand", "zeroize"] }
+getrandom = "0.2"
+ed25519-dalek = "2"
+hmac = "0.12"
+sha2 = "0.10"
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["serde", "derive"] }
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa"] }
+sha3 = "0.10"
+solana-system-interface = { version = "3", features = ["bincode"] }
+solana-hash = "4.7.0"
+solana-message = { version = "5", features = ["wincode"] }
+solana-address = "2.9.0"
+tokio = { version = "1", features = ["time", "net", "io-util"] }
+spl-token-2022-interface = "3"
+spl-associated-token-account-interface = "2"
+pubkey3 = { version = "3", package = "solana-pubkey" }
+solana-instruction = "3"
+solana-program-pack = "3"
+
+[profile.release]
+strip = true
+lto = true
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+hidapi = { version = "2", default-features = false, features = ["windows-native", "linux-static-hidraw"] } # Ledger over USB (ledger.rs)
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_Foundation"] }
+
+# dev builds: Argon2 unoptimized takes seconds per unlock; optimize the crypto crates even in debug
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3

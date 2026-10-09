@@ -1,0 +1,136 @@
+@import '@fontsource/manrope/400.css';
+@import '@fontsource/manrope/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+
+:root {
+  --stage: #07070a;
+  --ink: #eeebe5;
+  --ink-2: rgb(238 235 229 / .72);
+  --ink-3: rgb(238 235 229 / .5);
+  --line: rgb(238 235 229 / .12);
+  --ember: #ff5a2e;
+  --ember-ink: #1a0802;
+  /* machined charcoal: the same family as the anodized cards */
+  --metal: #222227;
+  --metal-hi: #2b2b31;
+  --metal-edge: inset 0 1px 0 rgb(255 255 255 / .06), inset 0 -1px 0 rgb(0 0 0 / .35);
+
+  --pad: clamp(20px, 3.2vw, 48px);
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 64px;
+  --r-pill: 999px;
+  --r-panel: 16px;
+  --r-card: 20px;
+
+  --ease: cubic-bezier(.32, .9, .18, 1);
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+
+  --font: 'Manrope', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--stage); color: var(--ink); overflow: hidden; }
+body {
+  font: 400 15px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+::selection { background: rgb(255 90 46 / .35); color: var(--ink); }
+:focus-visible { outline: 1.5px solid var(--ink); outline-offset: 3px; }
+button { font: inherit; color: inherit; }
+input { font: inherit; color: inherit; }
+input::placeholder { color: var(--ink-3); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.num { font-variant-numeric: tabular-nums; }
+.display { font-weight: 400; letter-spacing: -.025em; line-height: 1; font-variant-numeric: tabular-nums lining-nums; }
+.muted { color: var(--ink-2); }
+.faint { color: var(--ink-3); }
+
+* { scrollbar-width: thin; scrollbar-color: rgb(238 235 229 / .18) transparent; }
+
+/* capsule control: a press sinks .97 in 80 ms and returns in 160 ms. Hover (owner 09.10: the sweep was too much, the
+   bare edge too plain): a faint light pool sits under the pointer and follows it (ref spotlight-radial-cursor-glow),
+   fading in over 400 ms; nothing loops, nothing moves on its own */
+.btn {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 10px;
+  min-height: 48px; padding: 0 24px;
+  border: 0; border-radius: var(--r-pill);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgb(238 235 229 / .2);
+  cursor: pointer; overflow: hidden; white-space: nowrap; isolation: isolate;
+  transition: transform 160ms var(--ease), background-color 400ms ease, box-shadow 400ms ease;
+}
+.btn::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; opacity: 0;
+  background: radial-gradient(90px circle at var(--mx, 50%) var(--my, 50%), rgb(238 235 229 / .09), transparent 70%);
+  transition: opacity 400ms ease;
+}
+.btn.solid::before { background: radial-gradient(90px circle at var(--mx, 50%) var(--my, 50%), #fff, transparent 70%); }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled)::before { opacity: 1; }
+  .btn:hover:not(:disabled) { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .3); }
+  .btn.solid:hover:not(:disabled) { box-shadow: none; }
+}
+.btn:active { transform: scale(.97); transition-duration: 80ms; }
+.btn.solid { background: var(--ink); color: var(--stage); box-shadow: none; }
+.btn.ember { background: var(--ember); color: var(--ember-ink); box-shadow: 0 10px 30px -10px rgb(255 90 46 / .6); }
+.btn.small { min-height: 36px; padding: 0 16px; font-size: 14px; }
+.btn.icon { padding: 0; width: 40px; min-height: 40px; justify-content: center; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn svg { width: 18px; height: 18px; flex: none; }
+
+.panel {
+  background: var(--metal);
+  border-radius: var(--r-panel);
+  box-shadow: var(--metal-edge), 0 30px 80px -30px rgb(0 0 0 / .8);
+}
+
+.field {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 52px; padding: 0 18px;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: box-shadow 300ms ease;
+}
+.field:focus-within { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .45); }
+.field.bad { box-shadow: inset 0 0 0 1px rgb(255 90 46 / .7); }
+.field input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: 16px; }
+
+.label { font-size: 13px; color: var(--ink-3); }
+
+/* intro running (class set in index.html): every entrance below waits, then starts with its own delay */
+:root.intro #app *:not(#app > .intro, #app > .intro *) { animation-play-state: paused !important; } /* html carries .intro too: name the intro layer itself */
+
+/* text rising from a mask, one line at a time (M-22) */
+.line { display: block; overflow: clip; }
+.line > span { display: block; animation: rise 640ms var(--ease) backwards; animation-delay: var(--d, 0ms); }
+@keyframes rise { from { transform: translateY(110%); } }
+.appear { animation: appear 520ms var(--ease) backwards; animation-delay: var(--d, 0ms); }
+@keyframes appear { from { opacity: 0; transform: translateY(14px); } }
+
+/* screen changes (owner 08.10: smooth, one piece, nothing starting abruptly): only the wallet column takes part, the
+   3D scene behind stays live. The old screen settles away first, the new one eases in after it (M-27), on a soft
+   in-out start rather than the world's fast-out curve; a token's ticker flies between row and title (M-35). */
+:root { view-transition-name: none; }
+/* the screen being swapped never holds the pointer: tabs, «Назад» and the chips stay live mid-change (owner 09.10) */
+::view-transition { pointer-events: none; }
+::view-transition-old(col) { animation: vt-out 220ms cubic-bezier(.4, 0, .9, .6) both; }
+::view-transition-new(col) { animation: vt-in 520ms cubic-bezier(.45, .05, .2, 1) 140ms both; }
+@keyframes vt-out { to { opacity: 0; transform: translateY(-6px); } }
+@keyframes vt-in { from { opacity: 0; transform: translateY(10px); } } /* no filter: M-40 */
+::view-transition-group(sym) { animation-duration: 560ms; animation-timing-function: cubic-bezier(.45, .05, .2, 1); }
+::view-transition-old(sym), ::view-transition-new(sym) { animation-duration: 560ms; animation-timing-function: cubic-bezier(.45, .05, .2, 1); width: 100%; height: 100%; object-fit: fill; }
+/* same word both sides: the new one takes over early, so the pair reads as one word changing size, not two fading */
+::view-transition-old(sym) { animation: vt-gone 260ms ease both; }
+::view-transition-new(sym) { animation: vt-come 200ms ease both; }
+@keyframes vt-gone { to { opacity: 0; } }
+@keyframes vt-come { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+  .line > span, .appear { animation: fade 120ms ease backwards; }
+  @keyframes fade { from { opacity: 0; } }
+  .btn, .btn::before { transition: none !important; }
+}
