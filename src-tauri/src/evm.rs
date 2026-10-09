@@ -852,7 +852,7 @@ mod swap_live {
         let q = quote_raw(8453, from, NATIVE, USDC, 1_000_000_000_000_000).await.unwrap();
         let min = q["estimate"]["toAmountMin"].as_str().unwrap().parse::<u128>().unwrap();
         let tx = &q["transactionRequest"];
-        let usdc = addr_bytes(USDC).unwrap(), usdt = addr_bytes("0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2").unwrap();
+        let (usdc, usdt) = (addr_bytes(USDC).unwrap(), addr_bytes("0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2").unwrap());
         assert!(vet_lifi_assets(8453, &me, tx, 1_000_000_000_000_000, min, Some(([0; 20], usdc, 1_000_000_000_000_000))).is_ok());
         assert!(vet_lifi_assets(8453, &me, tx, 1_000_000_000_000_000, min, Some(([0; 20], usdt, 1_000_000_000_000_000))).unwrap_err().contains("другой токен"));
         // USDC -> ETH: an exact approve, then the swap
