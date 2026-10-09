@@ -645,7 +645,7 @@
         if (e.payload.unlocked) { if (sheet) enterAfterSheet = true; else enter() } // the sheet folds first, then the deal
         hero?.sync(netDeck())
       }),
-      listen<{ sig: string; state: 'sent' | 'sent-unknown' | 'confirmed' | 'finalized' | 'failed' | 'expired' | 'replaced' | 'unknown' }>('send-status', ({ payload: p }) => {
+      listen<{ sig: string; state: 'sent' | 'sent-unknown' | 'confirmed' | 'finalized' | 'failed' | 'failed-allowance' | 'expired' | 'replaced' | 'unknown' }>('send-status', ({ payload: p }) => {
         flash(t(`send.st.${p.state}`), short(p.sig), p.state === 'finalized')
         loadPending()
         if (p.state !== 'sent' && p.state !== 'sent-unknown') { refresh(); if (addrTab === 'perms') loadPerms() }

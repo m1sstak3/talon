@@ -43,6 +43,7 @@ fn changed(app: &AppHandle, accounts: &[vault::Account], unlocked: bool) {
 struct Pending {
     sig: String, cluster: String, last_valid: u64, // Solana; cluster "evm" marks an EVM send
     #[serde(default)] chain: u64, #[serde(default)] rpc: String, #[serde(default)] from: String, #[serde(default)] nonce: u64,
+    #[serde(default)] approved: bool, // an EVM swap sent after its approve: if it fails, the allowance stays (the owner is told)
 }
 static PENDING: Mutex<()> = Mutex::new(());
 fn journal(app: &AppHandle) -> Result<PathBuf, String> { Ok(vault_path(app)?.with_file_name("pending.json")) }
@@ -83,6 +84,7 @@ fn follow_evm(app: AppHandle, p: Pending) {
             evm::Outcome::Confirmed => "finalized", evm::Outcome::Failed => "failed", evm::Outcome::Replaced => "replaced",
             evm::Outcome::Included => "confirmed", evm::Outcome::Unknown => "unknown",
         };
+        let state = if p.approved && matches!(state, "failed" | "replaced") { "failed-allowance" } else { state };
         if !matches!(state, "unknown" | "confirmed") { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig)); } // not final yet: the journal keeps it for the next start
         let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": p.sig, "state": state }));
     });
@@ -604,7 +606,7 @@ async fn send_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, 
     ed25519_dalek::VerifyingKey::from_bytes(&pk).and_then(|k| k.verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig)))
         .map_err(|_| "подпись не сходится с адресом счёта".to_string())?;
     let sig_id = solana::tx_id(&sig);
-    let pending = Pending { sig: sig_id.clone(), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0 };
+    let pending = Pending { sig: sig_id.clone(), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0, approved: false };
     // on disk before a single byte goes out; no journal, no broadcast (second security review 07.10)
     pending_edit(&app, |l| l.push(pending.clone())).map_err(|e| format!("перевод не отправлен: {e}"))?;
     let first = match solana::submit(&d, &sig).await {
@@ -641,7 +643,7 @@ async fn evm_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, p
         raws.push(d.signed(sig, *parity));
     }
     // journaled before a byte leaves; sent in nonce order (an approve, then the swap that needs it)
-    let pend: Vec<Pending> = ds.iter().zip(&raws).map(|(d, raw)| Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce }).collect();
+    let pend: Vec<Pending> = ds.iter().zip(&raws).enumerate().map(|(i, (d, raw))| Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce, approved: i > 0 }).collect();
     pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("перевод не отправлен: {e}"))?;
     let mut last = String::new();
     for (i, (d, raw)) in ds.iter().zip(&raws).enumerate() {
@@ -708,7 +710,7 @@ async fn batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String,
     let (signed, mut done) = agent::sign_plan(&plan, &vault_path(&app)?, &pass).await?; // wrong password: the plan stays
     // one-shot: only the caller that takes the plan out of the hub may send
     { let mut h = state.agent.lock().unwrap(); if !h.waiting.as_ref().is_some_and(|p| p.id == id) { return Err(gone()) } h.waiting = None; }
-    let pend: Vec<Pending> = signed.iter().map(|(_, d, sig)| Pending { sig: solana::tx_id(sig), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0 }).collect();
+    let pend: Vec<Pending> = signed.iter().map(|(_, d, sig)| Pending { sig: solana::tx_id(sig), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0, approved: false }).collect();
     // all on disk before a single byte goes out
     pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("переводы не отправлены: {e}"))?;
     let mut sent = 0;

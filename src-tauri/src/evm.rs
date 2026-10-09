@@ -530,7 +530,32 @@ pub async fn swap_quote(chain_id: u64, from: &str, input: &str, output: &str, am
 }
 /// the swap as one or two drafts (approve + swap), each priced; the swap's transaction vetted as described above
 pub struct SwapPlan { pub drafts: Vec<Draft>, pub out_amount: u128, pub min_out: u128, pub out_decimals: u8, pub output: String, pub route: String }
+/// the swap steps inside a GenericSwap call: (sending asset, receiving asset, fromAmount, requiresDeposit) per step.
+/// Single variants carry one SwapData tuple, the others an array of them (ABI: tuple has a dynamic `bytes`, so it is
+/// encoded by offset). Any malformed offset is an error, never a guess.
+fn lifi_steps(data: &[u8]) -> Result<Vec<([u8; 20], [u8; 20], u128, bool)>, String> {
+    let bad = || "битые данные обмена".to_string();
+    let args = &data[4..];
+    let word = |at: usize| -> Result<&[u8], String> { args.get(at..at + 32).ok_or_else(bad) };
+    let num = |at: usize| -> Result<usize, String> { let w = word(at)?; if w[..24].iter().any(|b| *b != 0) { return Err(bad()) } Ok(u64::from_be_bytes(w[24..].try_into().unwrap()) as usize) };
+    let addr = |at: usize| -> Result<[u8; 20], String> { let w = word(at)?; if w[..12].iter().any(|b| *b != 0) { return Err(bad()) } Ok(w[12..].try_into().unwrap()) };
+    let step = |at: usize| -> Result<([u8; 20], [u8; 20], u128, bool), String> {
+        let amt = word(at + 4 * 32)?; if amt[..16].iter().any(|b| *b != 0) { return Err(bad()) }
+        Ok((addr(at + 2 * 32)?, addr(at + 3 * 32)?, u128::from_be_bytes(amt[16..].try_into().unwrap()), word(at + 6 * 32)?[31] == 1))
+    };
+    let single = [[0x46, 0x66, 0xfc, 0x80], [0x73, 0x32, 0x14, 0xa3], [0xaf, 0x70, 0x60, 0xfd]].iter().any(|s| data[..4] == *s);
+    let off = num(5 * 32)?;
+    if single { return Ok(vec![step(off)?]) }
+    let n = num(off)?;
+    if n == 0 || n > 16 { return Err(bad()) }
+    (0..n).map(|i| step(off + 32 + num(off + 32 + 32 * i)?)).collect()
+}
 pub fn vet_lifi(chain_id: u64, from: &[u8; 20], tx: &Value, value: u128, min_out: u128) -> Result<(Vec<u8>, u128), String> {
+    vet_lifi_assets(chain_id, from, tx, value, min_out, None)
+}
+/// + (input token, output token, amount): what is pulled from us is only the input token, at most the amount, and the
+/// last step delivers the chosen output token (Codex 10.10: a cheap token with the same minimum number would pass)
+pub fn vet_lifi_assets(chain_id: u64, from: &[u8; 20], tx: &Value, value: u128, min_out: u128, assets: Option<([u8; 20], [u8; 20], u128)>) -> Result<(Vec<u8>, u128), String> {
     let refuse = |why: &str| Err(format!("кошелёк отказался подписывать этот обмен: {why}"));
     if tx["chainId"].as_u64() != Some(chain_id) { return refuse("другая сеть") }
     if !tx["to"].as_str().is_some_and(|t| t.eq_ignore_ascii_case(LIFI)) { return refuse("незнакомый контракт") }
@@ -544,6 +569,12 @@ pub fn vet_lifi(chain_id: u64, from: &[u8; 20], tx: &Value, value: u128, min_out
     if w(4)[..16].iter().any(|b| *b != 0) || u128::from_be_bytes(w(4)[16..].try_into().unwrap()) < min_out { return refuse("минимум ниже обещанного") }
     let v = tx["value"].as_str().map(|s| hex_u128(&Value::String(s.into()))).transpose()?.unwrap_or(0);
     if v != value { return refuse("сумма монет не та") }
+    if let Some((input, output, amount)) = assets {
+        let steps = lifi_steps(&data)?;
+        let pulled: u128 = steps.iter().filter(|s| s.3).map(|s| s.2).sum();
+        if steps.iter().any(|s| s.3 && s.0 != input) || pulled > amount { return refuse("списание другого токена или больше суммы") }
+        if steps.last().map(|s| s.1) != Some(output) { return refuse("пришёл бы другой токен") }
+    }
     let gas = tx["gasLimit"].as_str().map(|s| hex_u128(&Value::String(s.into()))).transpose()?.unwrap_or(0);
     Ok((data, gas))
 }
@@ -560,7 +591,8 @@ pub async fn prepare_swap(url: &str, chain_id: u64, from: &str, input: &str, out
     let (out_amount, min_out) = (num(&q["estimate"]["toAmount"]), num(&q["estimate"]["toAmountMin"]));
     if min_out == 0 { return Err("сервис обмена не назвал минимум".into()) }
     let native_in = is_native(input);
-    let (data, quoted_gas) = vet_lifi(chain_id, &fa, &q["transactionRequest"], if native_in { amt } else { 0 }, min_out)?;
+    let asset = |t: &str| -> Result<[u8; 20], String> { if is_native(t) { Ok([0u8; 20]) } else { addr_bytes(t) } };
+    let (data, quoted_gas) = vet_lifi_assets(chain_id, &fa, &q["transactionRequest"], if native_in { amt } else { 0 }, min_out, Some((asset(input)?, asset(output)?, amt)))?;
     let bal = hex_u128(&rpc(&http, url, "eth_getBalance", json!([from, "pending"])).await?)?;
     let nonce = hex_u128(&rpc(&http, url, "eth_getTransactionCount", json!([from, "pending"])).await?)? as u64;
     let (prio, max_fee) = fees(&http, url).await?;
@@ -816,6 +848,13 @@ mod swap_live {
         let got = token_balance(&h, URL, USDC, &me, "latest").await.unwrap() - u0;
         assert!(got >= p.min_out, "got {got} < min {}", p.min_out);
         println!("ETH->USDC: got {got}, quoted {} min {} via {}", p.out_amount, p.min_out, p.route);
+        // a real LI.FI answer, vetted against a different output token or a larger pull: refused
+        let q = quote_raw(8453, from, NATIVE, USDC, 1_000_000_000_000_000).await.unwrap();
+        let min = q["estimate"]["toAmountMin"].as_str().unwrap().parse::<u128>().unwrap();
+        let tx = &q["transactionRequest"];
+        let usdc = addr_bytes(USDC).unwrap(), usdt = addr_bytes("0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2").unwrap();
+        assert!(vet_lifi_assets(8453, &me, tx, 1_000_000_000_000_000, min, Some(([0; 20], usdc, 1_000_000_000_000_000))).is_ok());
+        assert!(vet_lifi_assets(8453, &me, tx, 1_000_000_000_000_000, min, Some(([0; 20], usdt, 1_000_000_000_000_000))).unwrap_err().contains("другой токен"));
         // USDC -> ETH: an exact approve, then the swap
         let half = units(got / 2, 6);
         let b0 = hex_u128(&rpc(&h, URL, "eth_getBalance", json!([from, "latest"])).await.unwrap()).unwrap();
