@@ -9,13 +9,17 @@ the Svelte + three.js interface only shows what the core decided and asks you to
 
 > Status: personal project, used with real money by its author. Not audited. Use small amounts first.
 
+**Download:** [latest release](https://github.com/m1sstak3/talon/releases/latest) — the Windows installer and the Android APK.
+No need to build anything.
+
 ## What it does
 
 - **Solana**: SOL and SPL / Token-2022 tokens (names read from the chain, impersonating tickers flagged), send,
   receive, history, in-wallet swaps through Jupiter (assembled and vetted instruction by instruction in the core).
 - **EVM**: Ethereum, Base, Arbitrum, OP, Polygon, BNB Chain, Avalanche and 11 more (Linea, Unichain, Sonic, Gnosis,
   Scroll, Ink, World Chain, Berachain, Monad, HyperEVM, Robinhood Chain), plus your own network by RPC URL.
-  Native coin and the known stablecoins of each network; EIP-1559 sends with the rollup L1 fee included in the price.
+  Native coin and the known stablecoins of each network; EIP-1559 sends with the rollup L1 fee included in the price;
+  swaps through LI.FI, each transaction decoded and checked by the core (contract, receiver, minimum, tokens) before signing.
 - **Permissions**: see who may spend your tokens (Solana delegates, EVM allowances to well-known routers and
   marketplaces) and revoke them.
 - **Ledger** (Solana app, USB): add a Ledger account, sign on the device; nothing secret is stored.
