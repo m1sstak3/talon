@@ -12,7 +12,7 @@ export function install(kind: string) {
   // ?accounts=4: more own accounts, for folders and batches
   const extra = Number(new URLSearchParams(location.search).get('accounts') ?? 1) - 1
   const more = ['9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM', 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH', '2wmVCSfPxGPjrnMMn7rchp4uaeoTqN39mXFC2zhPdri9', 'DRpbCBMxVnDK7maPM5tGv6MvB3v1sRMC86PZ8okm21hy']
-  const ext = more.slice(0, Math.max(0, extra)).map((sol, i) => ({ id: `demo${i + 1}`, name: ['Копилка', 'Ферма 1', 'Ферма 2', 'Ферма 3'][i], solana: sol, evm: null as string | null, ton: null as string | null, wallet: 'w', index: i + 1 }))
+  const ext = more.slice(0, Math.max(0, extra)).map((sol, i) => ({ id: `demo${i + 1}`, name: ['Копилка', 'Ферма 1', 'Ферма 2', 'Ферма 3'][i], solana: sol, evm: ('0x' + String(i + 1).repeat(40)) as string | null, ton: null as string | null, wallet: 'w', index: i + 1 }))
   let accounts = kind === 'welcome' ? [] : [acc, ...ext], unlocked = kind === 'open', open = kind === 'open'
   let folders: unknown[] = JSON.parse(localStorage.getItem('mockFolders') ?? '[]')
   const own: Record<string, string> = {}
@@ -29,6 +29,9 @@ export function install(kind: string) {
       case 'ton_watch': await wait(300); return { nano: '12500000000', usdt: '42000000', active: true }
       case 'addon_list': { const id = new URLSearchParams(location.search).get('addon'); return id ? [{ id, name: 'Сбор', version: '1.0.0', description: '', permissions: ['accounts', 'balances', 'history', 'transfer'], hosts: [] }] : [] }
       case 'addon_open': return null
+      case 'evm_batch_plan': await wait(700); return { id: 'eb1', by: 'owner', kind: 'evm', network: 'Base', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
+        total: (a.sources.length * (a.token ? 25 : 0.4)).toString(), sym: a.token ? 'USDC' : 'ETH', fees: (a.sources.length * 0.0000021).toFixed(7), feeSym: 'ETH',
+        rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.evm ?? '', amount: a.token ? '25' : '0.4', fee: '0.0000021' })) }
       case 'folders_get': return folders
       case 'folders_set': folders = a.list; localStorage.setItem('mockFolders', JSON.stringify(folders)); return null
       case 'batch_plan': await wait(700); return waiting = { id: 'b2', by: a.addon ? 'addon' : 'owner', byName: a.addon ? 'Сбор' : undefined, network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,

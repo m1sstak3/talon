@@ -479,17 +479,23 @@ pub fn sign_many(path: &Path, pass: &str, items: &[(&str, &[u8])]) -> Result<Vec
 /// sign a 32-byte EVM transaction hash with the account's secp256k1 key: decrypt -> sign -> wipe.
 /// Returns (r||s, y parity). Callers recover the signer and compare it with the address the user saw.
 pub fn sign_evm(path: &Path, pass: &str, id: &str, hash: &[u8; 32]) -> Result<([u8; 64], u8), String> {
+    Ok(sign_evm_many(path, pass, &[(id, *hash)])?[0])
+}
+/// the same for many accounts with ONE decryption (a folder's batch: one Argon2 run, not one per account)
+pub fn sign_evm_many(path: &Path, pass: &str, items: &[(&str, [u8; 32])]) -> Result<Vec<([u8; 64], u8)>, String> {
     let (sec, accs, _) = open(&read(path)?, pass)?;
-    let a = accs.iter().find(|a| a.id == id).ok_or("нет такого счёта")?;
-    let w = sec.wallets.iter().find(|w| w.id == a.wallet).ok_or("нет такого кошелька")?;
-    let key = match (&w.phrase, &w.evm_key) {
-        (Some(p), _) => evm_key(p, a.index),
-        (None, Some(k)) => parse_evm_key(k)?,
-        _ => match &w.sol_key { Some(s) => evm_from_solana(&*parse_sol_key(s)?), None => return Err("у этого счёта нет ключа Ethereum".into()) },
-    };
-    let sk = k256::ecdsa::SigningKey::from_slice(key.as_ref()).map_err(|_| "ключ Ethereum повреждён".to_string())?; // zeroizes on drop
-    let (sig, rec) = sk.sign_prehash_recoverable(hash).map_err(|_| "не удалось подписать".to_string())?;
-    Ok((sig.to_bytes().into(), rec.to_byte() & 1))
+    items.iter().map(|(id, hash)| {
+        let a = accs.iter().find(|a| a.id == *id).ok_or("нет такого счёта")?;
+        let w = sec.wallets.iter().find(|w| w.id == a.wallet).ok_or("нет такого кошелька")?;
+        let key = match (&w.phrase, &w.evm_key) {
+            (Some(p), _) => evm_key(p, a.index),
+            (None, Some(k)) => parse_evm_key(k)?,
+            _ => match &w.sol_key { Some(s) => evm_from_solana(&*parse_sol_key(s)?), None => return Err("у этого счёта нет ключа Ethereum".into()) },
+        };
+        let sk = k256::ecdsa::SigningKey::from_slice(key.as_ref()).map_err(|_| "ключ Ethereum повреждён".to_string())?; // zeroizes on drop
+        let (sig, rec) = sk.sign_prehash_recoverable(hash).map_err(|_| "не удалось подписать".to_string())?;
+        Ok((sig.to_bytes().into(), rec.to_byte() & 1))
+    }).collect()
 }
 
 /// what export hands out for one account: the wallet's phrase (phrase wallets), the account's Solana keypair in the
@@ -613,6 +619,24 @@ mod tests {
         assert!(add_keys(&p, &[("D", "not a key")], pass).is_err(), "a bad key stops the whole batch");
         assert_eq!(accounts(&p).unwrap().len(), 3);
         assert!(add_keys(&p, &[("E", &key(3))], "wrong password!").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn evm_batch_signs_each_account() {
+        // a folder batch: one decryption, every signature recovers to its own account's EVM address
+        let dir = std::env::temp_dir().join(format!("cw-evmb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("vault.json");
+        let a = create(&p, Source::Phrase(ABANDON), "A", "correct horse battery", CHEAP).unwrap();
+        let b = add_account(&p, &a[0].wallet, "B", "correct horse battery").unwrap();
+        let (h1, h2) = ([1u8; 32], [2u8; 32]);
+        let sigs = sign_evm_many(&p, "correct horse battery", &[(&b[0].id, h1), (&b[1].id, h2)]).unwrap();
+        for ((sig, parity), (acc, h)) in sigs.iter().zip([(&b[0], h1), (&b[1], h2)]) {
+            let rs = k256::ecdsa::Signature::from_slice(sig).unwrap();
+            let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(&h, &rs, k256::ecdsa::RecoveryId::from_byte(*parity).unwrap()).unwrap();
+            assert_eq!(Some(evm_address_of(&vk)), acc.evm, "{}", acc.name);
+        }
+        assert!(sign_evm_many(&p, "wrong", &[(&b[0].id, h1)]).is_err(), "wrong password signs nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

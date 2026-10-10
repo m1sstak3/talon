@@ -28,7 +28,7 @@ pub(crate) struct Session {
     send: Option<Send>,                 // the one transfer waiting for confirmation
 }
 struct Send { id: String, account: String, draft: Draft }
-enum Draft { Sol(solana::Draft), Evm(evm::Draft), EvmSwap(Vec<evm::Draft>) }
+enum Draft { Sol(solana::Draft), Evm(evm::Draft), EvmSwap(Vec<evm::Draft>), EvmBatch(Vec<(String, evm::Draft)>) } // EvmBatch: (account id, draft) per row of a folder's batch
 pub(crate) struct App { pub(crate) session: Mutex<Session>, pub(crate) agent: Mutex<agent::Hub> }
 
 pub(crate) fn vault_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -543,6 +543,83 @@ async fn evm_prepare_send(app: AppHandle, state: tauri::State<'_, App>, account:
     Ok(out)
 }
 
+// ---------------------------------------------------------------- EVM batch (a folder's «Перевести со всех»)
+/// one draft per own account: the coin or one listed token, «max» or an amount, all priced and dry-run now; the plan
+/// waits in the single-send slot and one password signs it all. Same dev-build rules as a single EVM send
+#[tauri::command]
+async fn evm_batch_plan(app: AppHandle, state: tauri::State<'_, App>, chain_id: u64, rpc: String, to: String, token: Option<String>, sources: Vec<agent::Source>) -> Result<serde_json::Value, String> {
+    #[cfg(debug_assertions)]
+    if !matches!(chain_id, 11155111 | 84532 | 31337) { return Err("настоящие сети закрыты в сборке для разработки; переводы — только в установленной программе".into()) }
+    #[cfg(not(debug_assertions))]
+    if chain_id == 31337 { return Err("локальная тестовая сеть доступна только в сборке для разработки".into()) }
+    if sources.is_empty() || sources.len() > agent::MAX_SOURCES { return Err(format!("от 1 до {} счетов в одном пакете", agent::MAX_SOURCES)) }
+    let path = vault_path(&app)?;
+    let (accs, epoch) = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } (s.accounts.clone(), s.epoch) };
+    let mut seen = std::collections::HashSet::new();
+    let (mut rows, mut drafts) = (vec![], vec![]);
+    for src in &sources {
+        let a = accs.iter().find(|a| a.id == src.account).ok_or_else(|| format!("счёт {} не из этого кошелька", src.account))?;
+        if !seen.insert(a.id.clone()) { return Err(format!("счёт «{}» указан дважды", a.name)) }
+        if a.ledger { return Err(format!("счёт «{}» подписывает Ledger: в пакет он не входит", a.name)) }
+        let from = a.evm.clone().ok_or_else(|| format!("у счёта «{}» нет адреса Ethereum", a.name))?;
+        let d = evm::prepare(evm::Ask { rpc: rpc.trim(), chain_id, from: &from, to: to.trim(), amount: &src.amount, token: token.as_deref(), name: None, symbol: None }).await
+            .map_err(|e| format!("«{}»: {e}", a.name))?;
+        rows.push(serde_json::json!({ "name": a.name, "from": d.from, "amount": evm::units(d.amount, d.decimals as u32), "fee": evm::units(d.fee_max, 18) }));
+        drafts.push((a.id.clone(), d));
+    }
+    let d0 = &drafts[0].1;
+    let total: u128 = drafts.iter().map(|(_, d)| d.amount).sum();
+    let fees: u128 = drafts.iter().map(|(_, d)| d.fee_max).sum();
+    let id = rand_id();
+    let out = serde_json::json!({
+        "id": id, "by": "owner", "kind": "evm", "network": d0.network, "test": d0.test, "to": d0.to, "open": vault::is_open(&path),
+        "newRecipient": drafts.iter().any(|(_, d)| d.new_recipient), "count": drafts.len(),
+        "total": evm::units(total, d0.decimals as u32), "sym": d0.symbol, "fees": evm::units(fees, 18), "feeSym": d0.native, "rows": rows,
+    });
+    let mut s = state.session.lock().unwrap();
+    if !s.unlocked || s.epoch != epoch { return Err("перевод отменён".into()) }
+    s.send = Some(Send { id, account: String::new(), draft: Draft::EvmBatch(drafts) });
+    Ok(out)
+}
+/// sign every row with one decryption, recover each signer and compare it with the row's sender, journal all, then send
+/// each; a row the network refuses is reported, the rest go
+#[tauri::command]
+async fn evm_batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>) -> Result<serde_json::Value, String> {
+    let gone = || "переводы уже отправлены или отменены".to_string();
+    let items: Vec<(String, [u8; 32])> = {
+        let s = state.session.lock().unwrap();
+        if !s.unlocked { return Err("кошелёк заблокирован".into()) }
+        match &s.send { Some(Send { id: i, draft: Draft::EvmBatch(ds), .. }) if *i == id => ds.iter().map(|(a, d)| (a.clone(), d.hash())).collect(), _ => return Err(gone()) }
+    };
+    let refs: Vec<(&str, [u8; 32])> = items.iter().map(|(a, h)| (a.as_str(), *h)).collect();
+    let sigs = vault::sign_evm_many(&vault_path(&app)?, &pass, &refs)?; // wrong password keeps the plan
+    let ds = {
+        let mut s = state.session.lock().unwrap();
+        match s.send.take() {
+            Some(Send { id: i, draft: Draft::EvmBatch(ds), .. }) if i == id && ds.len() == items.len() && ds.iter().zip(&items).all(|((_, d), (_, h))| d.hash() == *h) => ds,
+            other => { s.send = other; return Err(gone()) }
+        }
+    };
+    let mut raws = vec![];
+    for (((_, d), (_, h)), (sig, parity)) in ds.iter().zip(&items).zip(&sigs) {
+        let rs = k256::ecdsa::Signature::from_slice(sig).map_err(|_| "подпись повреждена".to_string())?;
+        let rec = k256::ecdsa::RecoveryId::from_byte(*parity).ok_or("подпись повреждена")?;
+        let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(h, &rs, rec).map_err(|_| "подпись повреждена".to_string())?;
+        if vault::evm_address_of(&vk) != d.from { return Err("подпись не сходится с адресом счёта".into()) }
+        raws.push(d.signed(sig, *parity));
+    }
+    let pend: Vec<Pending> = ds.iter().zip(&raws).map(|((_, d), raw)| Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce, approved: false }).collect();
+    pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("переводы не отправлены: {e}"))?; // all on disk before a byte leaves
+    let (mut sent, mut errors) = (0, vec![]);
+    for (((_, d), raw), p) in ds.iter().zip(&raws).zip(pend) {
+        match evm::submit(&d.rpc, raw).await {
+            evm::Sent::Rejected(e) => { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig)); errors.push(format!("{}: {e}", d.from)) }
+            st => { sent += 1; let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": p.sig, "state": if matches!(st, evm::Sent::Ok) { "sent" } else { "sent-unknown" } })); follow(app.clone(), p) }
+        }
+    }
+    Ok(serde_json::json!({ "sent": sent, "total": ds.len(), "errors": errors }))
+}
+
 // ---------------------------------------------------------------- send
 /// build and price a transfer in the core and keep it; the answer is the confirmation screen's data and the draft id.
 /// The UI names account, recipient and amount; it never sees or touches the message that gets signed.
@@ -697,6 +774,7 @@ async fn send_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, 
             Draft::Sol(d) => (p.account.clone(), d.message.clone(), None),
             Draft::Evm(d) => (p.account.clone(), vec![], Some(vec![d.hash()])),
             Draft::EvmSwap(ds) => (p.account.clone(), vec![], Some(ds.iter().map(|d| d.hash()).collect())),
+            Draft::EvmBatch(_) => return Err("пакет переводов подтверждается своим окном".into()), // evm_batch_confirm
         }
     };
     if let Some(hashes) = evm_hash { return evm_confirm(app, state, id, pass, account, hashes).await }
@@ -914,7 +992,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret, bio_state, bio_enable, bio_unlock, bio_disable,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
-            agent_state, agent_access, agent_paths, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan,
+            agent_state, agent_access, agent_paths, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan, evm_batch_plan, evm_batch_confirm,
             addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,
             sol_watch, ton_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])

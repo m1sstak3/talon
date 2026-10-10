@@ -291,7 +291,7 @@
   // own: an agent's or add-on's plan arriving while the owner prepares a folder batch waits on the home bar (no swap of
   // sheets under the owner's hand). «Known» = own accounts and contacts: a watched address is somebody else's
   function showBatch(b: Batch, own = false) {
-    const known = vaultAccounts.some(a => a.solana === b.to) || contactList.some(c => c.address === b.to)
+    const known = vaultAccounts.some(a => a.solana === b.to || a.evm?.toLowerCase() === b.to.toLowerCase()) || contactList.some(c => c.address.toLowerCase() === b.to.toLowerCase())
     agentReq = { ...b, known }
     if (!sheet && view !== 'locked' && (own || !bBusy)) { menu = ''; sheet = { mode: 'batch', origin: null, batch: agentReq }; hero?.rest(true) }
   }
@@ -430,6 +430,7 @@
     // an add-on's proposal is answered once: closing the window without confirming rejects it in the core too, so the
     // add-on is never told «no» while the plan could still be confirmed later
     if (m === 'batch' && transferOffer) { if (!done && agentReq) invoke('batch_reject', { id: agentReq.id }).catch(() => {}); transferOffer({ confirmed: done }); transferOffer = null; agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
+    else if (m === 'batch' && sheet?.batch?.kind === 'evm') { agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
     else if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
     sheet = null
     hero?.rest(away) // a phone tab without the card keeps the scene asleep
@@ -603,19 +604,27 @@
     return v.length ? v.reduce((a, b) => a + b, 0) : undefined
   })
   // «Перевести со всех»: Solana for now (the core's batch), one destination; «всё» skips accounts that are empty
-  let batchOpen = $state(false), bTo = $state(''), bMode = $state<'all' | 'each'>('all'), bAmt = $state(''), bTouched = $state(false), bBusy = $state(false)
-  const canBatch = $derived(chain.kind === 'solana' && signers.length > 0)
+  let batchOpen = $state(false), bTo = $state(''), bMode = $state<'all' | 'each'>('all'), bAmt = $state(''), bTouched = $state(false), bBusy = $state(false), bTok = $state('')
+  const bSigners = $derived(signers.filter(a => !!addressFor(a, chain)))
+  const canBatch = $derived((chain.kind === 'solana' || chain.kind === 'evm') && bSigners.length > 0)
+  // EVM: the coin or a listed token some member holds (the core knows the list; a stranger's token is never offered)
+  const bTokens = $derived(chain.kind !== 'evm' ? [] : [...new Map(members.flatMap(a => holdings[hk(a, chain)]?.cards ?? []).filter(c => c.id !== 'native' && c.amount > 0).map(c => [c.id, c.sym])).entries()])
+  const bSym = $derived(bTokens.find(([id]) => id === bTok)?.[1] ?? chain.symbol)
+  const balIn = (a: Account) => { const h = holdings[hk(a, chain)]; return !h ? 1 : bTok ? (h.cards.find(c => c.id === bTok)?.amount ?? 0) : h.native }
   const bAddr = $derived(contactList.find(c => c.name.toLowerCase() === bTo.trim().toLowerCase())?.address ?? bTo.trim())
-  const bErr = $derived(!bTo.trim() ? t('send.errTo') : !isAddress(bAddr) ? t('send.errAddr', { net: chain.name })
+  const bErr = $derived(!bTo.trim() ? t('send.errTo') : !(chain.kind === 'evm' ? isEvmAddress(bAddr) : isAddress(bAddr)) ? t('send.errAddr', { net: chain.name })
     : bMode === 'each' && !(Number(bAmt.replace(',', '.')) > 0) ? t('send.errZero') : '')
   async function reviewBatch(e: Event) {
     e.preventDefault(); bTouched = true
-    if (bErr || bBusy || !cluster(chain)) return
-    const sources = signers.filter(a => a.solana !== bAddr && (bMode === 'each' || (holdings[hk(a, chain)]?.native ?? 1) > 0))
+    if (bErr || bBusy) return
+    const sources = bSigners.filter(a => addressFor(a, chain).toLowerCase() !== bAddr.toLowerCase() && (bMode === 'each' || balIn(a) > 0))
       .map(a => ({ account: a.id, amount: bMode === 'all' ? 'max' : bAmt.trim().replace(',', '.') }))
     if (!sources.length) { flash(t('fold.nothing')); return }
     bBusy = true
-    try { showBatch(await batchPlan(cluster(chain)!, bAddr, sources), true) } catch (err) { flash(String(err)) } finally { bBusy = false }
+    try {
+      if (chain.kind === 'evm') showBatch(await invoke<Batch>('evm_batch_plan', { chainId: chain.chainId, rpc: chain.rpc, to: bAddr, token: bTok || null, sources }), true)
+      else if (cluster(chain)) showBatch(await batchPlan(cluster(chain)!, bAddr, sources), true)
+    } catch (err) { flash(String(err)) } finally { bBusy = false }
   }
   function removeWatch(id: string) {
     watchAccounts = watchAccounts.filter(a => a.id !== id); saveWatch(watchAccounts)
@@ -1476,7 +1485,7 @@
           <button class="btn solid" onclick={() => (batchOpen = !batchOpen)} disabled={!canBatch} aria-expanded={batchOpen}><Icon name="send" />{t('fold.sendAll')}</button>
           <button class="btn" onclick={() => startEdit()}>{t('fold.edit')}</button>
         </div>
-        {#if !canBatch && members.length}<p class="note">{chain.kind !== 'solana' ? t('fold.solOnly') : t('fold.noOwn')}</p>{/if}
+        {#if !canBatch && members.length}<p class="note">{chain.kind === 'ton' ? t('fold.solOnly') : t('fold.noOwn')}</p>{/if}
         {#if batchOpen && canBatch}
           <form class="form bform" onsubmit={reviewBatch} novalidate transition:slide={{ duration: still() ? 0 : 220 }}>
             <label><span class="label">{t('send.to')}</span>
@@ -1486,8 +1495,12 @@
               <button type="button" class="tag" class:cur={bMode === 'all'} role="radio" aria-checked={bMode === 'all'} onclick={() => (bMode = 'all')}>{t('fold.all')}</button>
               <button type="button" class="tag" class:cur={bMode === 'each'} role="radio" aria-checked={bMode === 'each'} onclick={() => (bMode = 'each')}>{t('fold.each')}</button>
             </div>
-            {#if bMode === 'each'}<label><span class="label">{t('fold.eachL')}</span><span class="field"><input bind:value={bAmt} inputmode="decimal" placeholder="0" class="num" autocomplete="off" /><span class="faint">{chain.symbol}</span></span></label>{/if}
-            <p class="faint small">{t(bMode === 'all' ? 'fold.allNote' : 'fold.eachNote', { n: signers.length })}</p>
+            {#if bTokens.length}<div class="chips" role="radiogroup" aria-label={t('fold.what')}>
+              <button type="button" class="tag" class:cur={!bTok} role="radio" aria-checked={!bTok} onclick={() => (bTok = '')}>{chain.symbol}</button>
+              {#each bTokens as [id, sym] (id)}<button type="button" class="tag" class:cur={bTok === id} role="radio" aria-checked={bTok === id} onclick={() => (bTok = id)}>{sym}</button>{/each}
+            </div>{/if}
+            {#if bMode === 'each'}<label><span class="label">{t('fold.eachL')}</span><span class="field"><input bind:value={bAmt} inputmode="decimal" placeholder="0" class="num" autocomplete="off" /><span class="faint">{bSym}</span></span></label>{/if}
+            <p class="faint small">{t(bMode === 'all' ? 'fold.allNote' : 'fold.eachNote', { n: bSigners.length })}</p>
             <button class="btn solid wide" disabled={bBusy || !!sheet}>{bBusy ? t('send.preparing') : t('fold.review')}</button>
           </form>
         {/if}
