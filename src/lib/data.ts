@@ -55,6 +55,24 @@ export const chains: Chain[] = [
   { id: 'berachain', name: 'Berachain', kind: 'evm', symbol: 'BERA', decimals: 18, chainId: 80094, rpc: 'https://rpc.berachain.com', explorer: 'https://berascan.com', more: true },
   { id: 'monad', name: 'Monad', kind: 'evm', symbol: 'MON', decimals: 18, chainId: 143, rpc: 'https://rpc.monad.xyz', explorer: 'https://monadscan.com', more: true },
   { id: 'hyperevm', name: 'HyperEVM', kind: 'evm', symbol: 'HYPE', decimals: 18, chainId: 999, rpc: 'https://rpc.hyperliquid.xyz/evm', explorer: 'https://hyperevmscan.io', more: true },
+  // 11.10: each RPC answered its own chain id, blocks and feeHistory
+  { id: 'plasma', name: 'Plasma', kind: 'evm', symbol: 'XPL', decimals: 18, chainId: 9745, rpc: 'https://rpc.plasma.to', explorer: 'https://plasmascan.to', more: true },
+  { id: 'mantle', name: 'Mantle', kind: 'evm', symbol: 'MNT', decimals: 18, chainId: 5000, rpc: 'https://mantle-rpc.publicnode.com', explorer: 'https://mantlescan.xyz', more: true },
+  { id: 'sei', name: 'Sei', kind: 'evm', symbol: 'SEI', decimals: 18, chainId: 1329, rpc: 'https://sei-evm-rpc.publicnode.com', explorer: 'https://seiscan.io', more: true },
+  { id: 'celo', name: 'Celo', kind: 'evm', symbol: 'CELO', decimals: 18, chainId: 42220, rpc: 'https://celo-rpc.publicnode.com', explorer: 'https://celoscan.io', more: true },
+  { id: 'flare', name: 'Flare', kind: 'evm', symbol: 'FLR', decimals: 18, chainId: 14, rpc: 'https://flare-api.flare.network/ext/C/rpc', explorer: 'https://flare-explorer.flare.network', more: true },
+  { id: 'zksync', name: 'ZKsync Era', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 324, rpc: 'https://mainnet.era.zksync.io', explorer: 'https://explorer.zksync.io', more: true },
+  { id: 'soneium', name: 'Soneium', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 1868, rpc: 'https://soneium-rpc.publicnode.com', explorer: 'https://soneium.blockscout.com', more: true },
+  { id: 'ronin', name: 'Ronin', kind: 'evm', symbol: 'RON', decimals: 18, chainId: 2020, rpc: 'https://api.roninchain.com/rpc', explorer: 'https://explorer.roninchain.com', more: true },
+  { id: 'megaeth', name: 'MegaETH', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 4326, rpc: 'https://mainnet.megaeth.com/rpc', explorer: 'https://mega.etherscan.io', more: true },
+  { id: 'xlayer', name: 'X Layer', kind: 'evm', symbol: 'OKB', decimals: 18, chainId: 196, rpc: 'https://rpc.xlayer.tech', explorer: 'https://www.oklink.com/x-layer', more: true },
+  { id: 'cronos', name: 'Cronos', kind: 'evm', symbol: 'CRO', decimals: 18, chainId: 25, rpc: 'https://cronos-evm-rpc.publicnode.com', explorer: 'https://explorer.cronos.com', more: true },
+  { id: 'katana', name: 'Katana', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 747474, rpc: 'https://rpc.katana.network', explorer: 'https://katanascan.com', more: true },
+  { id: 'morph', name: 'Morph', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 2818, rpc: 'https://rpc.morph.network', explorer: 'https://explorer.morph.network', more: true },
+  { id: 'arc', name: 'Arc', kind: 'evm', symbol: 'USDC', decimals: 18, chainId: 5042, rpc: 'https://arc-rpc.publicnode.com', explorer: 'https://explorer.arc.io', more: true },
+  { id: 'stable', name: 'Stable', kind: 'evm', symbol: 'USDT0', decimals: 18, chainId: 988, rpc: 'https://stable-evm-rpc.publicnode.com', explorer: 'https://stablescan.xyz', more: true },
+  { id: 'kaia', name: 'Kaia', kind: 'evm', symbol: 'KAIA', decimals: 18, chainId: 8217, rpc: 'https://public-en.node.kaia.io', explorer: 'https://kaiascan.io', more: true },
+  { id: 'opbnb', name: 'opBNB', kind: 'evm', symbol: 'BNB', decimals: 18, chainId: 204, rpc: 'https://opbnb-rpc.publicnode.com', explorer: 'https://opbnbscan.com', more: true },
   { id: 'solana-devnet', name: 'Solana Devnet', kind: 'solana', symbol: 'SOL', decimals: 9, test: true, rpc: '', explorer: 'https://solscan.io' },
   { id: 'sepolia', name: 'Sepolia', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 11155111, test: true, rpc: 'https://ethereum-sepolia-rpc.publicnode.com', explorer: 'https://sepolia.etherscan.io' },
   { id: 'base-sepolia', name: 'Base Sepolia', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 84532, test: true, rpc: 'https://sepolia.base.org', explorer: 'https://sepolia.basescan.org' },
@@ -199,7 +217,7 @@ export async function readHoldings(address: string, c: Chain): Promise<Holdings>
   }
 }
 
-const EVM_TOKEN_NAME: Record<string, string> = { USDC: 'USD Coin', 'USDC.e': 'USD Coin (мост)', USDT: 'Tether USD', DAI: 'Dai' }
+const EVM_TOKEN_NAME: Record<string, string> = { USDC: 'USD Coin', 'USDC.e': 'USD Coin (мост)', USDT: 'Tether USD', USDT0: 'Tether USD (USDT0)', DAI: 'Dai', USDG: 'Global Dollar' }
 
 // EVM: one call gives the list and every entry's details (an explorer's index); unsupported networks answer an error
 export const readEvmHistory = (address: string, c: Chain) => invoke<(Sig & Tx)[]>('evm_history', { chainId: c.chainId, address })

@@ -8,29 +8,48 @@ use sha3::{Digest, Keccak256};
 // ---------------------------------------------------------------- networks the core knows
 /// how a network charges for posting data to Ethereum on top of gas (estimateGas covers it on Arbitrum, Linea, ...)
 #[derive(Clone, Copy, PartialEq)]
-enum L1 { None, Op, Scroll }
+enum L1 { None, Op, OpRatio, Scroll, Morph } // OpRatio: Mantle charges the OP oracle's ETH fee in MNT, times tokenRatio()
 struct Net { id: u64, name: &'static str, native: &'static str, test: bool, l1: L1, explorer: &'static str, tokens: &'static [(&'static str, &'static str, u8)] }
 // tokens checked on chain 09.10 (symbol + decimals through each network's public RPC). Only these are read and sent:
 // an unknown contract can say any name, so it never shows up as «USDC» here.
 const NETS: &[Net] = &[
     Net { id: 1, name: "Ethereum", native: "ETH", test: false, l1: L1::None, explorer: "https://etherscan.io", tokens: &[("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6), ("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7", 6), ("DAI", "0x6B175474E89094C44Da98b954EedeAC495271d0F", 18)] },
-    Net { id: 8453, name: "Base", native: "ETH", test: false, l1: L1::Op, explorer: "https://basescan.org", tokens: &[("USDC", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6)] },
+    Net { id: 8453, name: "Base", native: "ETH", test: false, l1: L1::Op, explorer: "https://basescan.org", tokens: &[("USDC", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6), ("USDT", "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2", 6)] },
     Net { id: 42161, name: "Arbitrum One", native: "ETH", test: false, l1: L1::None, explorer: "https://arbiscan.io", tokens: &[("USDC", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 6), ("USDT", "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", 6)] },
     Net { id: 10, name: "OP Mainnet", native: "ETH", test: false, l1: L1::Op, explorer: "https://optimistic.etherscan.io", tokens: &[("USDC", "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", 6), ("USDT", "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", 6)] },
-    Net { id: 4663, name: "Robinhood Chain", native: "ETH", test: false, l1: L1::None, explorer: "", tokens: &[] },
+    Net { id: 4663, name: "Robinhood Chain", native: "ETH", test: false, l1: L1::None, explorer: "", tokens: &[("USDG", "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", 6)] },
     Net { id: 137, name: "Polygon", native: "POL", test: false, l1: L1::None, explorer: "https://polygonscan.com", tokens: &[("USDC", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", 6), ("USDT", "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", 6)] },
     Net { id: 56, name: "BNB Chain", native: "BNB", test: false, l1: L1::None, explorer: "https://bscscan.com", tokens: &[("USDT", "0x55d398326f99059fF775485246999027B3197955", 18), ("USDC", "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", 18)] },
     Net { id: 43114, name: "Avalanche", native: "AVAX", test: false, l1: L1::None, explorer: "https://snowtrace.io", tokens: &[("USDC", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", 6), ("USDT", "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7", 6)] },
-    Net { id: 59144, name: "Linea", native: "ETH", test: false, l1: L1::None, explorer: "https://lineascan.build", tokens: &[("USDC", "0x176211869cA2b568f2A7D4EE941E073a821EE1ff", 6)] },
-    Net { id: 130, name: "Unichain", native: "ETH", test: false, l1: L1::Op, explorer: "https://uniscan.xyz", tokens: &[("USDC", "0x078D782b760474a361dDA0AF3839290b0EF57AD6", 6)] },
+    Net { id: 59144, name: "Linea", native: "ETH", test: false, l1: L1::None, explorer: "https://lineascan.build", tokens: &[("USDC", "0x176211869cA2b568f2A7D4EE941E073a821EE1ff", 6), ("USDT", "0xA219439258ca9da29E9Cc4cE5596924745e12B93", 6)] },
+    Net { id: 130, name: "Unichain", native: "ETH", test: false, l1: L1::Op, explorer: "https://uniscan.xyz", tokens: &[("USDC", "0x078D782b760474a361dDA0AF3839290b0EF57AD6", 6), ("USDT0", "0x9151434b16b9763660705744891fA906F660EcC5", 6)] },
     Net { id: 146, name: "Sonic", native: "S", test: false, l1: L1::None, explorer: "https://sonicscan.org", tokens: &[("USDC", "0x29219dd400f2Bf60E5a23d13Be72B486D4038894", 6)] },
     Net { id: 100, name: "Gnosis", native: "xDAI", test: false, l1: L1::None, explorer: "https://gnosisscan.io", tokens: &[("USDC.e", "0x2a22f9c3b484c3629090FeED35F17Ff8F88f76F0", 6)] },
-    Net { id: 534352, name: "Scroll", native: "ETH", test: false, l1: L1::Scroll, explorer: "https://scrollscan.com", tokens: &[("USDC", "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4", 6)] },
-    Net { id: 57073, name: "Ink", native: "ETH", test: false, l1: L1::Op, explorer: "https://explorer.inkonchain.com", tokens: &[] },
-    Net { id: 480, name: "World Chain", native: "ETH", test: false, l1: L1::Op, explorer: "https://worldscan.org", tokens: &[] },
-    Net { id: 80094, name: "Berachain", native: "BERA", test: false, l1: L1::None, explorer: "https://berascan.com", tokens: &[] },
-    Net { id: 143, name: "Monad", native: "MON", test: false, l1: L1::None, explorer: "https://monadscan.com", tokens: &[] },
-    Net { id: 999, name: "HyperEVM", native: "HYPE", test: false, l1: L1::None, explorer: "https://hyperevmscan.io", tokens: &[] },
+    Net { id: 534352, name: "Scroll", native: "ETH", test: false, l1: L1::Scroll, explorer: "https://scrollscan.com", tokens: &[("USDC", "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4", 6), ("USDT", "0xf55BEC9cafDbE8730f096Aa55dad6D22d44099Df", 6)] },
+    Net { id: 57073, name: "Ink", native: "ETH", test: false, l1: L1::Op, explorer: "https://explorer.inkonchain.com", tokens: &[("USDC", "0x2D270e6886d130D724215A266106e6832161EAEd", 6), ("USDT0", "0x0200C29006150606B650577BBE7B6248F58470c1", 6), ("USDG", "0xe343167631d89B6Ffc58B88d6b7fB0228795491D", 6)] },
+    Net { id: 480, name: "World Chain", native: "ETH", test: false, l1: L1::Op, explorer: "https://worldscan.org", tokens: &[("USDC", "0x79A02482A880bCE3F13e09Da970dC34db4CD24d1", 6)] },
+    Net { id: 80094, name: "Berachain", native: "BERA", test: false, l1: L1::None, explorer: "https://berascan.com", tokens: &[("USDT0", "0x779Ded0c9e1022225f8E0630b35a9b54bE713736", 6), ("USDC.e", "0x549943e04f40284185054145c6E4e9568C1D3241", 6)] },
+    Net { id: 143, name: "Monad", native: "MON", test: false, l1: L1::None, explorer: "https://monadscan.com", tokens: &[("USDC", "0x754704Bc059F8C67012fEd69BC8A327a5aafb603", 6), ("USDT0", "0xe7cd86e13AC4309349F30B3435a9d337750fC82D", 6)] },
+    Net { id: 999, name: "HyperEVM", native: "HYPE", test: false, l1: L1::None, explorer: "https://hyperevmscan.io", tokens: &[("USDC", "0xb88339CB7199b77E23DB6E890353E22632Ba630f", 6), ("USDT0", "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb", 6)] },
+    // 11.10: every chain id, token symbol()/decimals() and L1 fee oracle re-read live (helper, against real receipts)
+    Net { id: 9745, name: "Plasma", native: "XPL", test: false, l1: L1::None, explorer: "https://plasmascan.to", tokens: &[("USDT0", "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb", 6), ("USDC", "0x2d661C89D812261039AF9764eceaAee884f5F67F", 6)] },
+    Net { id: 5000, name: "Mantle", native: "MNT", test: false, l1: L1::OpRatio, explorer: "https://mantlescan.xyz", tokens: &[("USDT0", "0x779Ded0c9e1022225f8E0630b35a9b54bE713736", 6), ("USDC", "0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9", 6)] },
+    Net { id: 1329, name: "Sei", native: "SEI", test: false, l1: L1::None, explorer: "https://seiscan.io", tokens: &[("USDC", "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392", 6), ("USDT0", "0x9151434b16b9763660705744891fA906F660EcC5", 6)] },
+    Net { id: 42220, name: "Celo", native: "CELO", test: false, l1: L1::None, explorer: "https://celoscan.io", tokens: &[("USDC", "0xcebA9300f2b948710d2653dD7B07f33A8B32118C", 6), ("USDT", "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e", 6)] },
+    Net { id: 14, name: "Flare", native: "FLR", test: false, l1: L1::None, explorer: "https://flare-explorer.flare.network", tokens: &[("USDT0", "0xe7cd86e13AC4309349F30B3435a9d337750fC82D", 6), ("USDC.e", "0xFbDa5F676cB37624f28265A144A48B0d6e87d3b6", 6)] },
+    Net { id: 324, name: "ZKsync Era", native: "ETH", test: false, l1: L1::None, explorer: "https://explorer.zksync.io", tokens: &[("USDC", "0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4", 6), ("USDT", "0x493257fD37EDB34451f62EDf8D2a0C418852bA4C", 6)] },
+    Net { id: 1868, name: "Soneium", native: "ETH", test: false, l1: L1::Op, explorer: "https://soneium.blockscout.com", tokens: &[("USDC.e", "0xbA9986D2381edf1DA03B0B9c1f8b00dc4AacC369", 6), ("USDT", "0x3A337a6adA9d885b6Ad95ec48F9b75f197b5AE35", 6)] },
+    Net { id: 2020, name: "Ronin", native: "RON", test: false, l1: L1::Op, explorer: "https://explorer.roninchain.com", tokens: &[("USDC", "0x0B7007c13325C48911F73A2daD5FA5dCBf808aDc", 6)] },
+    Net { id: 4326, name: "MegaETH", native: "ETH", test: false, l1: L1::Op, explorer: "https://mega.etherscan.io", tokens: &[("USDT0", "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb", 6)] },
+    Net { id: 196, name: "X Layer", native: "OKB", test: false, l1: L1::None, explorer: "https://www.oklink.com/x-layer", tokens: &[("USDC", "0xB6CEceAB302E2E4948951eE7843FC24E92933061", 6), ("USDT0", "0x779Ded0c9e1022225f8E0630b35a9b54bE713736", 6), ("USDG", "0x4ae46a509F6b1D9056937BA4500cb143933D2dc8", 6)] },
+    Net { id: 25, name: "Cronos", native: "CRO", test: false, l1: L1::None, explorer: "https://explorer.cronos.com", tokens: &[("USDC", "0x3D7F2C478aAfdB65542BCB44bCeeC05849999d2D", 6), ("USDC.e", "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59", 6), ("USDT", "0x66e428c3f67a68878562e79A0234c1F83c208770", 6)] },
+    Net { id: 747474, name: "Katana", native: "ETH", test: false, l1: L1::Op, explorer: "https://katanascan.com", tokens: &[("USDC", "0x203A662b0BD271A6ed5a60EdFbd04bFce608FD36", 6), ("USDT", "0x2DCa96907fde857dd3D816880A0df407eeB2D2F2", 6)] }, // Katana's canonical vbUSDC / vbUSDT
+    Net { id: 2818, name: "Morph", native: "ETH", test: false, l1: L1::Morph, explorer: "https://explorer.morph.network", tokens: &[("USDC", "0xCfb1186F4e93D60E60a8bDd997427D1F33bc372B", 6), ("USDT0", "0xe7cd86e13AC4309349F30B3435a9d337750fC82D", 6)] },
+    // the coin is the dollar itself (Arc: USDC, Stable: USDT0); their ERC-20 view of it is the same money, so not listed twice
+    Net { id: 5042, name: "Arc", native: "USDC", test: false, l1: L1::None, explorer: "https://explorer.arc.io", tokens: &[] },
+    Net { id: 988, name: "Stable", native: "USDT0", test: false, l1: L1::None, explorer: "https://stablescan.xyz", tokens: &[] },
+    Net { id: 8217, name: "Kaia", native: "KAIA", test: false, l1: L1::None, explorer: "https://kaiascan.io", tokens: &[("USDT", "0xd077A400968890Eacc75cdc901F0356c943e4fDb", 6)] },
+    Net { id: 204, name: "opBNB", native: "BNB", test: false, l1: L1::Op, explorer: "https://opbnbscan.com", tokens: &[("USDT", "0x9e5AAC1Ba1a2e6aEd6b32689DFcF62A509Ca96f3", 18)] },
     Net { id: 11155111, name: "Sepolia", native: "ETH", test: true, l1: L1::None, explorer: "https://sepolia.etherscan.io", tokens: &[("USDC", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", 6)] },
     Net { id: 84532, name: "Base Sepolia", native: "ETH", test: true, l1: L1::Op, explorer: "https://sepolia.basescan.org", tokens: &[("USDC", "0x036CbD53842c5426634e7929541eC2318f3dCF7e", 6)] },
     Net { id: 31337, name: "EVM Local", native: "ETH", test: true, l1: L1::None, explorer: "", tokens: &[] }, // anvil (tests, dev builds)
@@ -206,13 +225,22 @@ async fn fees(http: &reqwest::Client, url: &str) -> Result<(u128, u128), String>
 }
 /// what posting this transaction to Ethereum costs on a rollup that charges it apart from gas (OP stack, Scroll)
 async fn l1_fee(http: &reqwest::Client, url: &str, l1: L1, unsigned: &[u8]) -> Result<u128, String> {
-    let oracle = match l1 { L1::None => return Ok(0), L1::Op => "0x420000000000000000000000000000000000000F", L1::Scroll => "0x5300000000000000000000000000000000000002" };
+    let oracle = match l1 {
+        L1::None => return Ok(0),
+        L1::Op | L1::OpRatio => "0x420000000000000000000000000000000000000F",
+        L1::Scroll => "0x5300000000000000000000000000000000000002",
+        L1::Morph => "0x530000000000000000000000000000000000000F",
+    };
     // getL1Fee(bytes) with the transaction plus room for its 65-byte signature, so the guess errs high
     let mut tx = unsigned.to_vec(); tx.extend_from_slice(&[0xff; 68]);
     let mut d = vec![0x49, 0x94, 0x8e, 0x0e];
     d.extend_from_slice(&word(&[0x20])); d.extend_from_slice(&word(&(tx.len() as u64).to_be_bytes()));
     d.extend_from_slice(&tx); d.resize(d.len() + (32 - tx.len() % 32) % 32, 0);
-    word_u128(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": hex0x(&d) }, "latest"])).await?.as_str().ok_or("bad answer")?)
+    let fee = word_u128(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": hex0x(&d) }, "latest"])).await?.as_str().ok_or("bad answer")?)?;
+    if l1 != L1::OpRatio { return Ok(fee) }
+    // Mantle: the oracle prices in ETH, the chain charges MNT = fee x tokenRatio() (checked against a real receipt 11.10)
+    let ratio = word_u128(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": "0x06f837d3" }, "latest"])).await?.as_str().ok_or("bad answer")?)?;
+    fee.checked_mul(ratio).ok_or_else(|| "плата сети вышла за пределы".into())
 }
 
 pub struct Ask<'a> { pub rpc: &'a str, pub chain_id: u64, pub from: &'a str, pub to: &'a str, pub amount: &'a str, pub token: Option<&'a str>, pub name: Option<&'a str>, pub symbol: Option<&'a str> }
@@ -389,6 +417,8 @@ fn scout(id: u64) -> Option<String> {
     let h = match id {
         1 => "eth.blockscout.com", 10 => "optimism.blockscout.com", 100 => "gnosis.blockscout.com", 534352 => "scroll.blockscout.com",
         57073 => "explorer.inkonchain.com", 130 => "unichain.blockscout.com", 480 => "worldchain-mainnet.explorer.alchemy.com",
+        42220 => "celo.blockscout.com", 14 => "flare-explorer.flare.network", 324 => "zksync.blockscout.com", 1868 => "soneium.blockscout.com",
+        4326 => "megaeth.blockscout.com", 2818 => "explorer-api.morph.network", 2020 => "explorer.roninchain.com",
         11155111 => "eth-sepolia.blockscout.com", 84532 => "base-sepolia.blockscout.com",
         43114 => return Some("https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api".into()),
         _ => return None,
@@ -690,6 +720,34 @@ pub async fn track(rpc_url: &str, hash: &str, from: &str, nonce: u64, included: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore] // network: cargo test --lib new_networks_live -- --ignored
+    fn new_networks_live() {
+        tauri::async_runtime::block_on(async {
+            const V: &str = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+            for (id, url) in [(9745, "https://rpc.plasma.to"), (5000, "https://mantle-rpc.publicnode.com"), (1329, "https://sei-evm-rpc.publicnode.com"),
+                (42220, "https://celo-rpc.publicnode.com"), (14, "https://flare-api.flare.network/ext/C/rpc"), (324, "https://mainnet.era.zksync.io"),
+                (1868, "https://soneium-rpc.publicnode.com"), (2020, "https://api.roninchain.com/rpc"), (4326, "https://mainnet.megaeth.com/rpc"),
+                (196, "https://rpc.xlayer.tech"), (25, "https://cronos-evm-rpc.publicnode.com"), (747474, "https://rpc.katana.network"),
+                (2818, "https://rpc.morph.network"), (5042, "https://arc-rpc.publicnode.com"), (988, "https://stable-evm-rpc.publicnode.com"),
+                (8217, "https://public-en.node.kaia.io"), (204, "https://opbnb-rpc.publicnode.com")] {
+                let w = super::watch(url, id, V).await;
+                assert!(w.is_ok(), "{id}: {:?}", w.err());
+            }
+            let http = super::http().unwrap();
+            for (url, l1) in [("https://mantle-rpc.publicnode.com", super::L1::OpRatio), ("https://rpc.morph.network", super::L1::Morph), ("https://soneium-rpc.publicnode.com", super::L1::Op)] {
+                let f = super::l1_fee(&http, url, l1, &[0x02; 110]).await.unwrap();
+                println!("{url}: {f}");
+                assert!(f > 0, "{url} L1 fee 0");
+            }
+        })
+    }
+    #[test]
+    fn listed_tokens_have_valid_checksums() {
+        for n in super::NETS { for (sym, c, _) in n.tokens { assert!(super::addr_bytes(c).is_ok(), "{} {sym} {c}", n.name) } }
+        let ids: std::collections::HashSet<u64> = super::NETS.iter().map(|n| n.id).collect();
+        assert_eq!(ids.len(), super::NETS.len(), "a chain id listed twice");
+    }
     use super::*;
     #[test]
     fn checks() {

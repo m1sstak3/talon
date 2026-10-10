@@ -872,6 +872,9 @@
     polygon: 'полигон матик matic', bnb: 'бинанс бнб bsc binance bep20', avalanche: 'аваланч лавина', robinhood: 'робинхуд',
     linea: 'линея', unichain: 'юничейн uniswap', sonic: 'соник fantom', gnosis: 'гносис', scroll: 'скролл', ink: 'инк kraken',
     worldchain: 'ворлд world', berachain: 'берачейн', monad: 'монад', hyperevm: 'хайпер hyperliquid',
+    plasma: 'плазма', mantle: 'мантл', sei: 'сей', celo: 'село', flare: 'флэр флер', zksync: 'зксинк zk era', soneium: 'сониум sony',
+    ronin: 'ронин axie', megaeth: 'мегаэфир мега', xlayer: 'okx окх иксленер x layer', cronos: 'кронос crypto.com', katana: 'катана',
+    morph: 'морф', arc: 'арк circle', stable: 'стейбл tether', kaia: 'кайя klaytn line', opbnb: 'опбнб бинанс',
   }
   const hasMoney = (c: Chain) => { const h = holdings[hk(acc, c)]; return !!h && (h.native > 0 || h.cards.some(x => x.verified && x.amount > 0)) }
   const favNets = $derived(chainList.filter(c => !c.test && (fav.includes(c.id) || c.id === chainId)))
