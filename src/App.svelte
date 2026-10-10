@@ -8,7 +8,7 @@
   import { onBackButtonPress } from '@tauri-apps/api/app'
   import { createHero, iconURL, type Hero, type Theme } from './lib/hero'
   import {
-    chains as seedChains, fmt, short, isAddress, isEvmAddress, addressFor, coreAvailable, cluster,
+    chains as seedChains, fmt, short, isAddress, isEvmAddress, familyOf, parseScan, addressFor, coreAvailable, cluster,
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
     readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, evmSwapTokens, evmSwapQuote, evmPrepareSwap, EVM_NATIVE, type TokenInfo, type Tx, type SwapQuote,
     prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, loadFav, saveFav,
@@ -557,7 +557,18 @@
   const valid = (a: string) => (chain.kind === 'evm' ? isEvmAddress(a) : isAddress(a))
   const amt = $derived(Number(amount.replace(/\s/g, '').replace(',', '.')))
   const maxAmt = $derived(card?.amount ?? 0)
-  const toErr = $derived(!to.trim() ? t('send.errTo') : !valid(toAddr) ? t('send.errAddr', { net: chain.name }) : toAddr === myAddress ? t('send.errSelf') : '')
+  // an address of another family: offer its networks (where money is, else the main one); families not sent to yet say so
+  const FAM = { solana: 'Solana', evm: 'Ethereum', tron: 'Tron', bitcoin: 'Bitcoin', ton: 'TON' } as const
+  const toFam = $derived(familyOf(toAddr))
+  const toOther = $derived.by(() => {
+    if (!toFam || toFam === chain.kind || (toFam !== 'solana' && toFam !== 'evm')) return []
+    const nets = chainList.filter(c => c.kind === toFam && !!c.test === !!chain.test && addressFor(acc, c))
+    const rich = nets.filter(hasMoney)
+    return (rich.length ? rich : nets).slice(0, 3)
+  })
+  function hopTo(id: string, keep = to) { setChain(id); send(keep) }
+  const toErr = $derived(!to.trim() ? t('send.errTo') : toFam && toFam !== 'solana' && toFam !== 'evm' ? t('send.unsupported', { fam: FAM[toFam] })
+    : !valid(toAddr) ? t('send.errAddr', { net: chain.name }) : toAddr === myAddress ? t('send.errSelf') : '')
   const amtErr = $derived(!amount.trim() ? t('send.errAmt') : !(amt > 0) ? t('send.errZero') : amt > maxAmt ? t('send.errMax', { v: fmt(maxAmt, card?.sym) }) : '')
   function reviewSend(e: Event) {
     e.preventDefault(); touched = true
@@ -581,14 +592,6 @@
   // EIP-681 link (ethereum:<to>@chain, …/transfer?address=<to>). What it gives is only typed into the form: the address
   // check and the confirmation stay as they are
   let scanning = $state(false)
-  function parseScan(raw: string): { to: string; amount?: string } {
-    const s = raw.trim(), q = new URLSearchParams(s.split('?')[1] ?? '')
-    const sol = s.match(/^solana:([1-9A-HJ-NP-Za-km-z]{32,44})(\?|$)/i)
-    if (sol) { const a = q.get('amount'); return { to: sol[1], amount: a && /^\d+(\.\d+)?$/.test(a) ? a : undefined } }
-    const evm = s.match(/^ethereum:(?:pay-)?(0x[0-9a-fA-F]{40})/i), dest = q.get('address')
-    if (evm) return { to: /\/transfer\b/.test(s) && dest && /^0x[0-9a-fA-F]{40}$/.test(dest) ? dest : evm[1] }
-    return { to: s.slice(0, 200) }
-  }
   async function scanTo() {
     const bs = await import('@tauri-apps/plugin-barcode-scanner')
     try {
@@ -599,6 +602,12 @@
       const r = await Promise.race([bs.scan({ windowed: true, formats: [bs.Format.QRCode] }), new Promise<null>(res => (stopScan = () => res(null)))])
       if (!r) return
       const p = parseScan(r.content)
+      // the code names its network (EIP-681 @chain): send there, never on whatever network is open
+      if (p.chainId && p.chainId !== chain.chainId) {
+        const c = chainList.find(x => x.chainId === p.chainId)
+        if (!c) { flash(t('send.scanNet', { id: p.chainId })); return }
+        hopTo(c.id, p.to); haptic('ok'); return
+      }
       to = p.to; if (p.amount) amount = p.amount.replace('.', ','); haptic('ok')
     } catch (e) { if (!/cancel/i.test(String(e))) flash(String(e)) }
     finally { stopScan = null; scanning = false; document.documentElement.classList.remove('scanning'); hero?.rest(away || !!sheet) }
@@ -1154,7 +1163,9 @@
           <span class="field" class:bad={touched && toErr}><input bind:value={to} placeholder={t('send.toPh')} spellcheck="false" autocomplete="off" />
             {#if !to && android}<button type="button" class="tag sq" onclick={pasteTo} aria-label={t('send.paste')} title={t('send.paste')}><Icon name="paste" size={16} /></button>
               <button type="button" class="tag sq" onclick={scanTo} aria-label={t('send.scan')} title={t('send.scan')}><Icon name="scan" size={16} /></button>{/if}</span>
-          {#if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
+          {#if toOther.length}<span class="hop">{t('send.otherFamily', { fam: FAM[toFam as 'solana' | 'evm'] })}
+              {#each toOther as c (c.id)}<button type="button" class="tag" onclick={() => hopTo(c.id)}>{c.name}{#if hasMoney(c)}<span class="faint">{netWorth(c)}</span>{/if}</button>{/each}</span>
+          {:else if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
         </label>
         {#if recipients}<div class="chips appear" style="--d:120ms">
           <!-- one tap: the owner's other accounts first, then the address book -->
@@ -1686,6 +1697,8 @@
   .form label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a field never outgrows a phone (inputs have a min width of their own) */
   .err { font-size: 13px; color: var(--ember); }
   .ok { font-size: 12px; color: var(--ink-3); }
+  .hop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+  .hop .tag { display: inline-flex; gap: 8px; align-items: center; color: var(--ink); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .form > .chips { margin-top: -8px; }
   .tag { min-height: 30px; padding: 0 12px; border: 0; border-radius: var(--r-pill); background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font-size: 13px; cursor: pointer; transition: box-shadow 300ms ease, color 300ms ease; }

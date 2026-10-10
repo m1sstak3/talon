@@ -99,6 +99,22 @@ export function isAddress(s: string) {
   return t.match(/^1*/)![0].length + (n ? (n.toString(16).length + 1) >> 1 : 0) === 32 // leading «1» = zero bytes
 }
 export const isEvmAddress = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim())
+// whose address this is: a send offers the right network instead of «not an address»; the last three are not sent to yet
+export type Family = 'solana' | 'evm' | 'tron' | 'bitcoin' | 'ton'
+export function familyOf(s: string): Family | '' {
+  const t = s.trim()
+  return isEvmAddress(t) ? 'evm' : isAddress(t) ? 'solana' : /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(t) ? 'tron'
+    : /^(bc1[02-9ac-hj-np-z]{11,71}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/.test(t) ? 'bitcoin' : /^[EUk0]Q[A-Za-z0-9_-]{46}$/.test(t) ? 'ton' : ''
+}
+// a scanned payment code: solana:… (Solana Pay), ethereum:…[@chain] (EIP-681), or a bare address
+export function parseScan(raw: string): { to: string; amount?: string; chainId?: number } {
+  const s = raw.trim(), q = new URLSearchParams(s.split('?')[1] ?? '')
+  const sol = s.match(/^solana:([1-9A-HJ-NP-Za-km-z]{32,44})(\?|$)/i)
+  if (sol) { const a = q.get('amount'); return { to: sol[1], amount: a && /^\d+(\.\d+)?$/.test(a) ? a : undefined } }
+  const evm = s.match(/^ethereum:(?:pay-)?(0x[0-9a-fA-F]{40})(?:@(\d+))?/i), dest = q.get('address')
+  if (evm) return { to: /\/transfer\b/.test(s) && dest && /^0x[0-9a-fA-F]{40}$/.test(dest) ? dest : evm[1], chainId: evm[2] ? Number(evm[2]) : undefined }
+  return { to: s.slice(0, 200) }
+}
 // ponytail: Number() of base units is exact up to 2^53; enough for display, the send path keeps integers
 const units = (amount: string, decimals: number) => Number(amount) / 10 ** decimals
 
