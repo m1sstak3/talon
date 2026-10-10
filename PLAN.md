@@ -87,6 +87,12 @@ Mainnet gate (history): ~~durable pending-send record + restart recovery~~; ~~de
   листе кошелька с именем дополнения).
 - Порядок: новые сети (идёт) → папки + ручной пакет SOL → MCP и скилл v2 → предложения от дополнений → пакеты токенов
   и EVM → TON.
+- Built 11.10 (0.5.0): folders.rs + folder page + batch_plan (SOL) and evm_batch_plan/confirm (coin or listed token, one
+  decryption: vault::sign_evm_many); MCP 0.3.0 (status, networks, folders, evm_balances, history; server instructions)
+  + SKILL v2 + Settings «ИИ-помощник» connect lines; add-ons v2 (folders, history, requestTransfer under the «transfer»
+  permission, sheet titled with the add-on, closing = reject; addons/sweep.html); 17 EVM networks; TON read-only (v4R2,
+  Trust Wallet path). Security review by a second agent: no way to sign other than the sheet; fixes in ecb1158.
+  Not yet: SPL token batches, agent/add-on requests for EVM and tokens (t-038), TON sends (t-039), Tron/Bitcoin (t-040).
 
 **Add-ons («Дополнения»; model for the owner's word, risks checked with Codex 09.10)**
 - Goal: anyone shapes the wallet without touching the core; private integrations ship as add-ons.
