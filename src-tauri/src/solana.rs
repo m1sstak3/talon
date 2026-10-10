@@ -158,6 +158,8 @@ fn net(e: &reqwest::Error) -> String {
     if e.is_timeout() { "network timeout".into() } else if e.is_connect() { "no connection to the network".into() } else { "network request failed".into() }
 }
 
+/// one token's balance in a Watch: (base units, decimals); None when the address holds none of it
+pub fn holding(w: &Watch, mint: &str) -> Option<(u64, u8)> { w.tokens.iter().find(|h| h.mint == mint).and_then(|h| h.amount.parse().ok().map(|a| (a, h.decimals))) }
 pub async fn watch(address: &str, c: Cluster) -> Result<Watch, String> {
     if !valid_address(address) {
         return Err("not a Solana address".into());

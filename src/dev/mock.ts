@@ -29,6 +29,9 @@ export function install(kind: string) {
       case 'ton_watch': await wait(300); return { nano: '12500000000', usdt: '42000000', active: true }
       case 'addon_list': { const id = new URLSearchParams(location.search).get('addon'); return id ? [{ id, name: 'Сбор', version: '1.0.0', description: '', permissions: ['accounts', 'balances', 'history', 'transfer'], hosts: [] }] : [] }
       case 'addon_open': return null
+      case 'sol_batch_plan': await wait(700); return { id: 'sb1', by: 'owner', kind: 'sol', network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
+        total: String(a.sources.length * 25), sym: 'USDC', fees: (a.sources.length * 0.000005).toFixed(6), feeSym: 'SOL',
+        rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.solana ?? '', amount: '25', fee: '0.000005' })) }
       case 'evm_batch_plan': await wait(700); return { id: 'eb1', by: 'owner', kind: 'evm', network: 'Base', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
         total: (a.sources.length * (a.token ? 25 : 0.4)).toString(), sym: a.token ? 'USDC' : 'ETH', fees: (a.sources.length * 0.0000021).toFixed(7), feeSym: 'ETH',
         rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.evm ?? '', amount: a.token ? '25' : '0.4', fee: '0.0000021' })) }

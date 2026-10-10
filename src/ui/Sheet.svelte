@@ -13,7 +13,7 @@
   export interface Batch {
     id: string; network: string; test: boolean; to: string; newRecipient: boolean; open: boolean; count: number; total: string; fees: string
     rows: { name: string; from: string; balance?: string; amount: string; fee: string; left?: string }[]
-    kind?: 'evm' // an EVM folder batch: kept in the single-send slot, confirmed by evm_batch_confirm
+    kind?: 'evm' | 'sol' // a folder batch of an EVM asset or a Solana token: kept in the single-send slot, confirmed by its own call
     sym?: string; feeSym?: string // what moves and what pays the fees (absent: SOL)
     known?: boolean // the destination is one of the owner's accounts or contacts (set by the app)
     by?: 'owner' | 'agent' | 'addon' // who made the plan: a folder's «Перевести со всех», an agent, or an add-on (byName)
@@ -101,7 +101,7 @@
     }
     closing = true
     holdTween?.kill()
-    if ((mode === 'send' || batch?.kind === 'evm') && !done) await invoke('send_cancel').catch(() => {}) // before any animation: nothing can confirm now
+    if ((mode === 'send' || batch?.kind) && !done) await invoke('send_cancel').catch(() => {}) // before any animation: nothing can confirm now
     secret = p0 = p1 = p2 = ''; words = []; checks = ['', '', '']; keys = null
     await tick() // secrets leave the DOM before the window becomes capturable again
     const s = el.getBoundingClientRect()
@@ -280,12 +280,12 @@
     if (closing) return // closed during the quiet beat
     const pass = conf.open ? '' : p1
     busy = true; err = ''
-    try { await invoke(batch ? (batch.kind === 'evm' ? 'evm_batch_confirm' : 'batch_confirm') : 'send_confirm', { id: conf.id, pass }); busy = false; await close(true) }
+    try { await invoke(batch ? (batch.kind ? `${batch.kind}_batch_confirm` : 'batch_confirm') : 'send_confirm', { id: conf.id, pass }); busy = false; await close(true) }
     catch (e) { err = humanErr(e); busy = false; hold = 0 }
   }
 
   // the agent's request: «Отклонить» closes it for good; the cross only hides the sheet (it waits up to 10 minutes)
-  async function rejectBatch() { if (!batch || busy) return; await invoke(batch.kind === 'evm' ? 'send_cancel' : 'batch_reject', { id: batch.id }).catch(() => {}); close(false) }
+  async function rejectBatch() { if (!batch || busy) return; await invoke(batch.kind ? 'send_cancel' : 'batch_reject', { id: batch.id }).catch(() => {}); close(false) }
   const ru = (n: string) => n.replace('.', ',') // the core writes 1.5; the screen says 1,5
   const plural = (n: number) => n % 10 === 1 && n % 100 !== 11 ? 'перевод' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'перевода' : 'переводов'
   const shortA = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`
@@ -496,7 +496,7 @@
           <dl class="sum">
             <div><dt>Кому</dt><dd class="mono addr">{g4(batch.to)}</dd></div>
             <div><dt>Сеть</dt><dd class:warn={!batch.test}>{batch.network}{batch.test ? ' · тестовые деньги' : ' · настоящие деньги'}</dd></div>
-            <div><dt>Комиссии сети</dt><dd class="num">{batch.kind === 'evm' ? 'до ' : ''}{ru(batch.fees)} {batch.feeSym ?? 'SOL'}</dd></div>
+            <div><dt>Комиссии сети</dt><dd class="num">{batch.kind ? 'до ' : ''}{ru(batch.fees)} {batch.feeSym ?? 'SOL'}</dd></div>
           </dl>
           {#if !batch.known || batch.newRecipient}<p class="hint warn">{!batch.known ? 'Этого адреса нет среди ваших счетов и контактов. ' : ''}{batch.newRecipient ? 'В сети этот адрес ещё пустой. ' : ''}Сверьте его по буквам: отменить переводы нельзя.</p>{/if}
           <ol class="rows">

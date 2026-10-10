@@ -430,7 +430,7 @@
     // an add-on's proposal is answered once: closing the window without confirming rejects it in the core too, so the
     // add-on is never told «no» while the plan could still be confirmed later
     if (m === 'batch' && transferOffer) { if (!done && agentReq) invoke('batch_reject', { id: agentReq.id }).catch(() => {}); transferOffer({ confirmed: done }); transferOffer = null; agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
-    else if (m === 'batch' && sheet?.batch?.kind === 'evm') { agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
+    else if (m === 'batch' && sheet?.batch?.kind) { agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
     else if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
     sheet = null
     hero?.rest(away) // a phone tab without the card keeps the scene asleep
@@ -608,7 +608,8 @@
   const bSigners = $derived(signers.filter(a => !!addressFor(a, chain)))
   const canBatch = $derived((chain.kind === 'solana' || chain.kind === 'evm') && bSigners.length > 0)
   // EVM: the coin or a listed token some member holds (the core knows the list; a stranger's token is never offered)
-  const bTokens = $derived(chain.kind !== 'evm' ? [] : [...new Map(members.flatMap(a => holdings[hk(a, chain)]?.cards ?? []).filter(c => c.id !== 'native' && c.amount > 0).map(c => [c.id, c.sym])).entries()])
+  // a token some member holds: EVM — the core's listed ones; Solana — verified mints only (a stranger's airdrop is never offered)
+  const bTokens = $derived(chain.kind === 'ton' ? [] : [...new Map(members.flatMap(a => holdings[hk(a, chain)]?.cards ?? []).filter(c => c.id !== 'native' && c.amount > 0 && c.verified).map(c => [c.id, c.sym])).entries()])
   const bSym = $derived(bTokens.find(([id]) => id === bTok)?.[1] ?? chain.symbol)
   const balIn = (a: Account) => { const h = holdings[hk(a, chain)]; return !h ? 1 : bTok ? (h.cards.find(c => c.id === bTok)?.amount ?? 0) : h.native }
   const bAddr = $derived(contactList.find(c => c.name.toLowerCase() === bTo.trim().toLowerCase())?.address ?? bTo.trim())
@@ -623,6 +624,7 @@
     bBusy = true
     try {
       if (chain.kind === 'evm') showBatch(await invoke<Batch>('evm_batch_plan', { chainId: chain.chainId, rpc: chain.rpc, to: bAddr, token: bTok || null, sources }), true)
+      else if (cluster(chain) && bTok) showBatch(await invoke<Batch>('sol_batch_plan', { cluster: cluster(chain), to: bAddr, mint: bTok, sources }), true)
       else if (cluster(chain)) showBatch(await batchPlan(cluster(chain)!, bAddr, sources), true)
     } catch (err) { flash(String(err)) } finally { bBusy = false }
   }
