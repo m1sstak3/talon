@@ -19,7 +19,7 @@ pub const TTL: Duration = Duration::from_secs(600); // a plan not confirmed in 1
 pub struct Row { pub account: String, pub name: String, pub from: String, pub balance: u64, pub amount: u64, pub fee: u64 }
 /// an immutable plan: the password confirms exactly this (destination, rows, price); any change = a new request
 #[derive(Clone)]
-pub struct Plan { pub id: String, pub cluster: Cluster, pub to: String, pub new_recipient: bool, pub price: u64, pub rows: Vec<Row>, pub at: Instant }
+pub struct Plan { pub id: String, pub cluster: Cluster, pub to: String, pub new_recipient: bool, pub price: u64, pub rows: Vec<Row>, pub at: Instant, pub owner: bool } // owner: made by hand (a folder), not by an agent
 /// what became of one row after the owner confirmed
 #[derive(Clone)]
 pub struct Done { pub account: String, pub sig: Option<String>, pub error: Option<String> }
@@ -57,7 +57,7 @@ impl Hub {
 pub struct Source { pub account: String, pub amount: String } // "1.5" SOL or "max"
 
 /// sources -> plan: own accounts only, no duplicates, no self-transfer, each row priced and dry-run by the core
-pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sources: &[Source], id: String) -> Result<Plan, String> {
+pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sources: &[Source], id: String, owner: bool) -> Result<Plan, String> {
     if sources.is_empty() { return Err("нет ни одного счёта-источника".into()) }
     if sources.len() > MAX_SOURCES { return Err(format!("не больше {MAX_SOURCES} счетов в одном запросе")) }
     if !solana::valid_address(to) { return Err("получатель: это не адрес Solana".into()) }
@@ -69,6 +69,7 @@ pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sour
     for s in sources {
         let a = accounts.iter().find(|a| a.id == s.account || a.solana == s.account).ok_or_else(|| format!("счёт {} не из этого кошелька", s.account))?;
         if !seen.insert(a.id.clone()) { return Err(format!("счёт «{}» указан дважды", a.name)) }
+        if a.ledger { return Err(format!("счёт «{}» подписывает Ledger: в пакет он не входит", a.name)) }
         if a.solana == to { return Err(format!("счёт «{}» и есть получатель", a.name)) }
         let bal = solana::balance(&a.solana, c).await?;
         let amount = if s.amount.trim().eq_ignore_ascii_case("max") {
@@ -80,7 +81,7 @@ pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sour
         new_recipient |= d.new_recipient;
         rows.push(Row { account: a.id.clone(), name: a.name.clone(), from: a.solana.clone(), balance: bal, amount, fee });
     }
-    Ok(Plan { id, cluster: c, to: to.into(), new_recipient, price, rows, at: Instant::now() })
+    Ok(Plan { id, cluster: c, to: to.into(), new_recipient, price, rows, at: Instant::now(), owner })
 }
 
 /// the owner confirmed: each row rebuilt now (fresh blockhash) at the plan's amounts and price, signed with one
@@ -113,7 +114,7 @@ pub fn view(p: &Plan, open: bool) -> Value {
     let total: u64 = p.rows.iter().map(|r| r.amount).sum();
     let fees: u64 = p.rows.iter().map(|r| r.fee).sum();
     json!({
-        "id": p.id, "network": p.cluster.label(), "test": !matches!(p.cluster, Cluster::Mainnet), "to": p.to, "newRecipient": p.new_recipient,
+        "id": p.id, "by": if p.owner { "owner" } else { "agent" }, "network": p.cluster.label(), "test": !matches!(p.cluster, Cluster::Mainnet), "to": p.to, "newRecipient": p.new_recipient,
         "open": open, "count": p.rows.len(), "total": u(total), "fees": u(fees), "expires": (TTL.saturating_sub(p.at.elapsed())).as_secs(),
         "rows": p.rows.iter().map(|r| json!({ "name": r.name, "from": r.from, "balance": u(r.balance), "amount": u(r.amount), "fee": u(r.fee), "left": u(r.balance - r.amount - r.fee) })).collect::<Vec<_>>(),
     })
@@ -179,7 +180,7 @@ async fn serve(app: tauri::AppHandle, conn: tokio::net::windows::named_pipe::Nam
     }
 }
 
-/// the four methods; anything that signs or exports is simply not here
+/// the methods; anything that signs or exports is simply not here
 pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Value, String> {
     use tauri::{Emitter, Manager};
     let st = app.state::<crate::App>();
@@ -217,7 +218,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
                 if h.live().is_some() { return Err("уже есть запрос, который ждёт подтверждения владельца".into()) }
                 h.admit(Instant::now())?;
             }
-            let plan = plan(&accounts, c, &to, &sources, crate::rand_id()).await?;
+            let plan = plan(&accounts, c, &to, &sources, crate::rand_id(), false).await?;
             let open = crate::vault::is_open(&crate::vault_path(app)?);
             let v = view(&plan, open);
             {
@@ -231,6 +232,8 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
             Ok(json!({ "id": v["id"], "state": "waiting", "plan": v, "next": "the owner confirms in the wallet window; poll request_status" }))
         }
         "request_status" => Ok(status(&st.agent, p["id"].as_str().unwrap_or("")).await),
+        // the owner's folders: named groups of account ids (own and watch-only); sources for a request come from here
+        "folders" => Ok(json!(crate::folders::read(&crate::vault_path(app)?.with_file_name("folders.json"))?)),
         _ => Err(format!("нет такого метода: {method}")),
     }
 }
@@ -245,7 +248,7 @@ mod tests {
         for _ in 0..PER_MIN { h.admit(t).unwrap() }
         assert!(h.admit(t).is_err(), "sixth request in a minute refused");
         assert!(h.admit(t + Duration::from_secs(61)).is_ok(), "window slides");
-        h.waiting = Some(Plan { id: "a".into(), cluster: Cluster::Local, to: String::new(), new_recipient: false, price: 0, rows: vec![], at: t - TTL - Duration::from_secs(1) });
+        h.waiting = Some(Plan { id: "a".into(), cluster: Cluster::Local, to: String::new(), new_recipient: false, price: 0, rows: vec![], at: t - TTL - Duration::from_secs(1), owner: false });
         assert!(h.live().is_none(), "an old plan expires");
         assert!(matches!(h.closed.get("a"), Some((_, Err(_)))));
         assert_eq!(solana::sol_transfer_fee(1_000), 5001);
@@ -279,11 +282,11 @@ mod tests {
             let to = vault::sol_address(&vault::solana_key(&vault::new_phrase(), 0));
             let src = |a: &str, v: &str| Source { account: a.into(), amount: v.into() };
             // refusals: foreign account, duplicate, self as recipient, too many
-            assert!(plan(&accs, c, &to, &[src("nope", "1")], "x".into()).await.is_err());
-            assert!(plan(&accs, c, &to, &[src(&accs[0].id, "1"), src(&accs[0].id, "1")], "x".into()).await.is_err());
-            assert!(plan(&accs, c, &accs[1].solana, &[src(&accs[1].id, "1")], "x".into()).await.is_err());
-            assert!(plan(&accs, c, &to, &vec![src(&accs[0].id, "1"); MAX_SOURCES + 1], "x".into()).await.is_err());
-            let pl = plan(&accs, c, &to, &[src(&accs[0].id, "0.5"), src(&accs[1].id, "max"), src(&accs[2].solana, "MAX")], "b1".into()).await.unwrap();
+            assert!(plan(&accs, c, &to, &[src("nope", "1")], "x".into(), false).await.is_err());
+            assert!(plan(&accs, c, &to, &[src(&accs[0].id, "1"), src(&accs[0].id, "1")], "x".into(), false).await.is_err());
+            assert!(plan(&accs, c, &accs[1].solana, &[src(&accs[1].id, "1")], "x".into(), false).await.is_err());
+            assert!(plan(&accs, c, &to, &vec![src(&accs[0].id, "1"); MAX_SOURCES + 1], "x".into(), false).await.is_err());
+            let pl = plan(&accs, c, &to, &[src(&accs[0].id, "0.5"), src(&accs[1].id, "max"), src(&accs[2].solana, "MAX")], "b1".into(), false).await.unwrap();
             let v = view(&pl, false);
             assert_eq!((v["count"].as_u64(), v["newRecipient"].as_bool()), (Some(3), Some(true)));
             assert_eq!(v["rows"][1]["left"], "0");

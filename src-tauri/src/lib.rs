@@ -2,6 +2,7 @@ mod addons;
 mod agent;
 mod clip;
 mod evm;
+mod folders;
 mod ledger;
 mod prices;
 mod solana;
@@ -785,7 +786,7 @@ fn agent_switch(app: &AppHandle, on: bool) -> Result<(), String> {
         { h.server = Some(agent::start(app.clone(), file)); }
     } else {
         let _ = std::fs::remove_file(&flag);
-        if let Some(p) = h.waiting.take() { h.close(&p.id, p.cluster, Err("доступ агента выключен".into())) }
+        if h.waiting.as_ref().is_some_and(|p| !p.owner) { let p = h.waiting.take().unwrap(); h.close(&p.id, p.cluster, Err("доступ агента выключен".into())) } // the owner's own batch stays
     }
     Ok(())
 }
@@ -798,6 +799,37 @@ fn agent_state(app: AppHandle, state: tauri::State<App>) -> Result<serde_json::V
 }
 #[tauri::command]
 fn agent_access(app: AppHandle, on: bool) -> Result<bool, String> { agent_switch(&app, on)?; Ok(on) }
+
+// ---------------------------------------------------------------- folders and hand-made batches (folders.rs)
+fn folders_file(app: &AppHandle) -> Result<PathBuf, String> { Ok(vault_path(app)?.with_file_name("folders.json")) }
+#[tauri::command]
+fn folders_get(app: AppHandle) -> Result<Vec<folders::Folder>, String> { folders::read(&folders_file(&app)?) }
+#[tauri::command]
+fn folders_set(app: AppHandle, list: Vec<folders::Folder>) -> Result<(), String> {
+    folders::check(&list)?;
+    let f = folders_file(&app)?;
+    if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
+    vault::durable(&f, &serde_json::to_string(&list).map_err(|e| e.to_string())?)
+}
+/// a batch the owner makes by hand (a folder's «Перевести со всех»): the same immutable plan, sheet and one password as an
+/// agent's request; no agent switch needed. One batch waits at a time, whoever made it
+#[tauri::command]
+async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: String, to: String, sources: Vec<agent::Source>) -> Result<serde_json::Value, String> {
+    let accounts = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } s.accounts.clone() };
+    let c = solana::Cluster::parse(&network)?;
+    #[cfg(not(debug_assertions))]
+    if matches!(c, solana::Cluster::Local) { return Err("локальная тестовая сеть только в сборке для разработки".into()) }
+    #[cfg(debug_assertions)]
+    if matches!(c, solana::Cluster::Local) && std::env::var("CW_VAULT").is_err() { return Err("локальная сеть: только с одноразовым хранилищем".into()) }
+    let busy = || "ждёт подтверждения другой пакет переводов: сначала решите его".to_string();
+    if state.agent.lock().unwrap().live().is_some() { return Err(busy()) }
+    let plan = agent::plan(&accounts, c, to.trim(), &sources, rand_id(), true).await?;
+    let v = agent::view(&plan, vault::is_open(&vault_path(&app)?));
+    let mut h = state.agent.lock().unwrap();
+    if h.live().is_some() { return Err(busy()) }
+    h.waiting = Some(plan);
+    Ok(v)
+}
 #[tauri::command]
 fn batch_reject(state: tauri::State<App>, id: String) {
     let mut h = state.agent.lock().unwrap();
@@ -865,7 +897,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret, bio_state, bio_enable, bio_unlock, bio_disable,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
-            agent_state, agent_access, batch_reject, batch_confirm, fee_state,
+            agent_state, agent_access, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan,
             addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,
             sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])

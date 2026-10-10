@@ -12,7 +12,7 @@
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
     readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, evmSwapTokens, evmSwapQuote, evmPrepareSwap, EVM_NATIVE, type TokenInfo, type Tx, type SwapQuote,
     prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, loadFav, saveFav,
-    addonList, addonInspect, addonInstall, addonRemove, type Addon,
+    addonList, addonInspect, addonInstall, addonRemove, type Addon, foldersGet, foldersSet, batchPlan, type Folder,
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
   import { t, i18n, humanErr } from './lib/i18n.svelte'
@@ -26,7 +26,7 @@
   import Intro, { type Kind } from './ui/Intro.svelte'
   import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 
-  type View = 'locked' | 'home' | 'token' | 'receive' | 'send' | 'swap' | 'history' | 'addresses' | 'settings' | 'addon'
+  type View = 'locked' | 'home' | 'token' | 'receive' | 'send' | 'swap' | 'history' | 'addresses' | 'settings' | 'addon' | 'folder'
 
   let canvas: HTMLCanvasElement
   let hero = $state.raw<Hero | null>(null) // raw: the intro writes to hero.birth, a proxy would swallow it
@@ -458,7 +458,7 @@
     // the phone moves like its system: deeper slides in from the side, back slides out, tabs just cross over (app.css)
     d.startViewTransition(async () => { change(); document.documentElement.dataset.nav = DEPTH[view] > DEPTH[from] ? 'push' : DEPTH[view] < DEPTH[from] ? 'pop' : 'tab'; await tick() })
   }
-  const DEPTH: Record<View, number> = { locked: 0, home: 0, history: 0, addresses: 0, settings: 0, addon: 0, token: 1, receive: 2, send: 2, swap: 2 }
+  const DEPTH: Record<View, number> = { locked: 0, home: 0, history: 0, addresses: 0, settings: 0, addon: 0, token: 1, folder: 1, receive: 2, send: 2, swap: 2 }
   let before: View = 'home' // where settings opened from: the gear closes them back there
   function go(v: View) {
     menu = ''
@@ -533,6 +533,48 @@
     if (isAddress(a) && chain.kind !== 'solana') chainId = 'solana'
     if (isEvmAddress(a) && chain.kind !== 'evm') chainId = 'ethereum'
     setAccount(id)
+  }
+  // ---------------------------------------------------------------- folders (owner 11.10): groups of accounts, one batch from all
+  let folders = $state<Folder[]>([]), folderId = $state(''), folderEdit = $state(false)
+  const folder = $derived(folders.find(f => f.id === folderId))
+  const members = $derived(folder ? accountList.filter(a => folder.accounts.includes(a.id)) : [])
+  const signers = $derived(members.filter(a => !a.watch && !a.ledger)) // a batch signs from these only
+  const loadFolders = () => { if (coreAvailable()) foldersGet().then(l => (folders = l), e => flash(String(e))) }
+  async function saveFolders(next: Folder[]) { try { await foldersSet(next); folders = next; return true } catch (e) { flash(String(e)); return false } }
+  function openFolder(id: string, edit = false) { menu = ''; folderId = id; batchOpen = false; startEdit(edit); swap(() => (view = 'folder')) }
+  async function newFolder() {
+    const f: Folder = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: t('fold.newName'), accounts: acc ? [acc.id] : [] }
+    if (await saveFolders([...folders, f])) openFolder(f.id, true)
+  }
+  let fName = $state(''), fSel = $state<string[]>([])
+  function startEdit(on = true) { folderEdit = on; if (on && folder) { fName = folder.name; fSel = [...folder.accounts] } }
+  async function saveFolder() {
+    if (!fName.trim()) return
+    if (await saveFolders(folders.map(f => f.id === folderId ? { ...f, name: fName.trim().slice(0, 40), accounts: fSel } : f))) folderEdit = false
+  }
+  async function deleteFolder() { if (await saveFolders(folders.filter(f => f.id !== folderId))) go('home') }
+  // what the folder holds on the open network; members load as the page opens (each read once per session)
+  $effect(() => { if (view === 'folder') for (const a of members) load(a, chain) })
+  const folderTotal = $derived(members.reduce((s, a) => s + (holdings[hk(a, chain)]?.native ?? 0), 0))
+  const folderUsd = $derived.by(() => {
+    if (chain.test || !showUsd) return undefined
+    const v = members.flatMap(a => holdings[hk(a, chain)]?.cards ?? []).map(c => prices[pidOf(c, chain)] === undefined ? undefined : prices[pidOf(c, chain)] * c.amount).filter((x): x is number => x !== undefined)
+    return v.length ? v.reduce((a, b) => a + b, 0) : undefined
+  })
+  // «Перевести со всех»: Solana for now (the core's batch), one destination; «всё» skips accounts that are empty
+  let batchOpen = $state(false), bTo = $state(''), bMode = $state<'all' | 'each'>('all'), bAmt = $state(''), bTouched = $state(false), bBusy = $state(false)
+  const canBatch = $derived(chain.kind === 'solana' && signers.length > 0)
+  const bAddr = $derived(contactList.find(c => c.name.toLowerCase() === bTo.trim().toLowerCase())?.address ?? bTo.trim())
+  const bErr = $derived(!bTo.trim() ? t('send.errTo') : !isAddress(bAddr) ? t('send.errAddr', { net: chain.name })
+    : bMode === 'each' && !(Number(bAmt.replace(',', '.')) > 0) ? t('send.errZero') : '')
+  async function reviewBatch(e: Event) {
+    e.preventDefault(); bTouched = true
+    if (bErr || bBusy || !cluster(chain)) return
+    const sources = signers.filter(a => a.solana !== bAddr && (bMode === 'each' || (holdings[hk(a, chain)]?.native ?? 1) > 0))
+      .map(a => ({ account: a.id, amount: bMode === 'all' ? 'max' : bAmt.trim().replace(',', '.') }))
+    if (!sources.length) { flash(t('fold.nothing')); return }
+    bBusy = true
+    try { showBatch(await batchPlan(cluster(chain)!, bAddr, sources)) } catch (err) { flash(String(err)) } finally { bBusy = false }
   }
   function removeWatch(id: string) {
     watchAccounts = watchAccounts.filter(a => a.id !== id); saveWatch(watchAccounts)
@@ -897,7 +939,7 @@
   onMount(() => {
     if (isTauri() && !(globalThis as any).__cwMock && !/Android/i.test(navigator.userAgent)) document.documentElement.style.setProperty('--wc', '126px') // room for the window buttons
     const vs = coreAvailable() ? refreshVault().catch(() => undefined) : Promise.resolve(undefined)
-    if (coreAvailable()) loadPending()
+    if (coreAvailable()) { loadPending(); loadFolders() }
     loadBio()
     vs.then(s => { startUnlocked = !!s?.unlocked; kindRes(!coreAvailable() ? 'none' : !s?.accounts.length ? 'welcome' : s.unlocked ? 'open' : 'locked') })
     // the heavy part (WebGL, light, card faces) starts once the intro's circle is traced
@@ -1038,6 +1080,7 @@
                 <button class="mi add" role="menuitem" onclick={e => openSheet('add-new', e)}><Icon name="plus" size={16} />{t('acc.newWallet')}</button>
                 {#if acc?.wallet && acc.evm}<button class="mi add" role="menuitem" onclick={e => openSheet('add-account', e, acc?.wallet)}><Icon name="plus" size={16} />{t('acc.new')}</button>{/if}
                 <button class="mi add" role="menuitem" onclick={e => openSheet('add-import', e)}><Icon name="import" size={16} />{t('acc.import')}</button>
+                <button class="mi add" role="menuitem" onclick={newFolder}><Icon name="folder" size={16} />{t('fold.new')}</button>
                 {#if !/Android/i.test(navigator.userAgent)}<button class="mi add" role="menuitem" onclick={e => openSheet('add-ledger', e)}><Icon name="key" size={16} />{t('acc.ledger')}</button>{/if}
                 <form class="netform" onsubmit={addWatch} novalidate>
                   <input class="fi mono" bind:value={watchAddr} placeholder={t('acc.watchPh')} spellcheck="false" autocomplete="off" aria-label={t('acc.watch')} />
@@ -1055,6 +1098,8 @@
                 {:else if a.wallet && !a.ledger}<button class="tag sq" onclick={e => openSheet('export', e, undefined, undefined, a.id)} aria-label={t('acc.export')} title={t('acc.export')}><Icon name="key" size={15} /></button>{/if}
               </div>
             {/each}
+            {#if folders.length}<p class="mh">{t('fold.title')}</p>
+              {#each folders as f (f.id)}<button class="mi fdr" role="menuitem" onclick={() => openFolder(f.id)}><Icon name="folder" size={16} /><span>{f.name}</span><span class="faint">{f.accounts.length}</span></button>{/each}{/if}
           </div>
         {/if}
       </div>
@@ -1088,7 +1133,7 @@
         {#if canSwap && !acc?.watch}<button class="btn" onclick={() => openSwap()} disabled={!tokens.length}><Icon name="swap" />{t('act.swap')}</button>{/if}
       </div>
       {#if agentReq && !sheet}
-        <button class="agentbar appear" style="--d:160ms" onclick={() => agentReq && showBatch(agentReq)}>{t('agent.waiting', { n: agentReq.count })}<span>{t('agent.open')}</span></button>
+        <button class="agentbar appear" style="--d:160ms" onclick={() => agentReq && showBatch(agentReq)}>{t(agentReq.by === 'owner' ? 'fold.waiting' : 'agent.waiting', { n: agentReq.count })}<span>{t('agent.open')}</span></button>
       {/if}
       {#if unresolved.length || pendingErr}
         <div class="unres appear" style="--d:180ms" role="status">
@@ -1373,6 +1418,57 @@
         </ul>
       {/if}
 
+    {:else if view === 'folder' && folder}
+      <button class="back" onclick={() => go('home')}><Icon name="back" />{t('act.back')}</button>
+      {#if !folderEdit}
+        <h2 class="display t s"><span class="line"><span>{folder.name}</span></span></h2>
+        <p class="muted cap">{t('fold.count', { n: members.length, net: chain.name })}</p>
+        <p class="bal display num">{fmt(folderTotal)}<small class="unit">{chain.symbol}</small></p>
+        {#if !chain.test && showUsd}<p class="usd faint">{#if folderUsd !== undefined}≈ {usd(folderUsd)}{/if}</p>{/if}
+        <div class="acts">
+          <button class="btn solid" onclick={() => (batchOpen = !batchOpen)} disabled={!canBatch} aria-expanded={batchOpen}><Icon name="send" />{t('fold.sendAll')}</button>
+          <button class="btn" onclick={() => startEdit()}>{t('fold.edit')}</button>
+        </div>
+        {#if !canBatch && members.length}<p class="note">{chain.kind !== 'solana' ? t('fold.solOnly') : t('fold.noOwn')}</p>{/if}
+        {#if batchOpen && canBatch}
+          <form class="form bform" onsubmit={reviewBatch} novalidate transition:slide={{ duration: still() ? 0 : 220 }}>
+            <label><span class="label">{t('send.to')}</span>
+              <span class="field" class:bad={bTouched && !!bErr}><input bind:value={bTo} placeholder={t('send.toPh')} spellcheck="false" autocomplete="off" /></span>
+              {#if bTouched && bErr}<span class="err">{bErr}</span>{/if}</label>
+            <div class="chips" role="radiogroup" aria-label={t('fold.mode')}>
+              <button type="button" class="tag" class:cur={bMode === 'all'} role="radio" aria-checked={bMode === 'all'} onclick={() => (bMode = 'all')}>{t('fold.all')}</button>
+              <button type="button" class="tag" class:cur={bMode === 'each'} role="radio" aria-checked={bMode === 'each'} onclick={() => (bMode = 'each')}>{t('fold.each')}</button>
+            </div>
+            {#if bMode === 'each'}<label><span class="label">{t('fold.eachL')}</span><span class="field"><input bind:value={bAmt} inputmode="decimal" placeholder="0" class="num" autocomplete="off" /><span class="faint">{chain.symbol}</span></span></label>{/if}
+            <p class="faint small">{t(bMode === 'all' ? 'fold.allNote' : 'fold.eachNote', { n: signers.length })}</p>
+            <button class="btn solid wide" disabled={bBusy || !!sheet}>{bBusy ? t('send.preparing') : t('fold.review')}</button>
+          </form>
+        {/if}
+        <h3 class="sh">{t('acc.list')}</h3>
+        <ul class="rows">
+          {#each members as a (a.id)}
+            {@const h = holdings[hk(a, chain)]}
+            <li><button class="trow" onclick={() => setAccount(a.id)}>
+              <span class="ticon"><span class="ini">{a.name[0]}</span></span>
+              <span class="tn"><b>{a.name}{#if a.watch}<em class="wtag">{t('watch.tag')}</em>{/if}</b><small class="faint mono">{short(addressFor(a, chain))}</small></span>
+              <span class="tv"><span class="num">{h ? fmt(h.native) : loadState[hk(a, chain)] === 'loading' ? '…' : '—'}</span><small class="faint">{chain.symbol}</small></span>
+            </button></li>
+          {:else}<li class="faint">{t('fold.empty')}</li>{/each}
+        </ul>
+      {:else}
+        <h2 class="display t s"><span class="line"><span>{t('fold.edit')}</span></span></h2>
+        <div class="fedit">
+          <label><span class="label">{t('fold.name')}</span><span class="field"><input bind:value={fName} maxlength="40" autocomplete="off" /></span></label>
+          <p class="label">{t('fold.members')}</p>
+          <div class="sets">
+            {#each accountList as a (a.id)}
+              <label class="set"><span>{a.name}{#if a.watch}<em class="wtag">{t('watch.tag')}</em>{/if}<small class="mono">{short(addressFor(a, chain))}</small></span>
+                <input type="checkbox" class="sw" checked={fSel.includes(a.id)} onchange={e => (fSel = e.currentTarget.checked ? [...fSel, a.id] : fSel.filter(x => x !== a.id))} /></label>
+            {/each}
+          </div>
+          <div class="two"><button class="btn" onclick={deleteFolder}>{t('fold.delete')}</button><button class="btn solid" onclick={saveFolder} disabled={!fName.trim()}>{t('fold.save')}</button></div>
+        </div>
+      {/if}
     {:else if view === 'addon' && addonNow}
       {#key addonNow.id}<iframe class="addon appear" bind:this={frameEl} src={addonSrc(addonNow.id)} title={addonNow.name} sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>{/key}
     {:else if view === 'settings'}
@@ -1586,6 +1682,14 @@
   .star.on { color: var(--ink-3); } /* filled = on the ring; quiet: nine bright stars were the loudest thing in the menu */
   .star.on :global(svg) { fill: currentColor; }
   .mi.add :global(svg) { margin-left: 0; }
+  .mi.fdr { color: var(--ink-2); padding-left: 8px; }
+  .mi.fdr :global(svg) { margin-left: 0; }
+  .mi.fdr .faint { margin-left: auto; font-size: 13px; }
+  .fedit { display: grid; gap: 16px; }
+  .fedit > label { display: grid; gap: 8px; }
+  .fedit .sets { margin: 0; }
+  .bform { margin-top: 16px; padding: 16px; border-radius: var(--r-panel); box-shadow: inset 0 0 0 1px var(--line); }
+  .wtag { margin-left: 8px; font-style: normal; font-size: 12px; font-weight: 400; color: var(--ink-3); }
   .netform { display: grid; gap: 8px; padding: 4px; }
   .fi { min-height: 40px; padding: 0 12px; border: 0; border-radius: var(--r-sm); background: none; box-shadow: inset 0 0 0 1px var(--line); outline: none; font-size: 15px; min-width: 0; }
   .fi:focus { box-shadow: inset 0 0 0 1px var(--line-hi); }

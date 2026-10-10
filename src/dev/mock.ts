@@ -8,7 +8,12 @@ export function install(kind: string) {
   ;(globalThis as any).__cwMock = true // a browser tab has no window: no fake title-bar buttons (owner 08.10 tried to drag it)
   mockWindows('main')
   const acc = { id: 'demo', name: 'Основной', solana: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', evm: new URLSearchParams(location.search).has('noevm') ? null : '0x52908400098527886E0F7030069857D2E4169EE7', wallet: 'w', index: 0 }
-  let accounts = kind === 'welcome' ? [] : [acc], unlocked = kind === 'open', open = kind === 'open'
+  // ?accounts=4: more own accounts, for folders and batches
+  const extra = Number(new URLSearchParams(location.search).get('accounts') ?? 1) - 1
+  const more = ['9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM', 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH', '2wmVCSfPxGPjrnMMn7rchp4uaeoTqN39mXFC2zhPdri9', 'DRpbCBMxVnDK7maPM5tGv6MvB3v1sRMC86PZ8okm21hy']
+  const ext = more.slice(0, Math.max(0, extra)).map((sol, i) => ({ id: `demo${i + 1}`, name: ['Копилка', 'Ферма 1', 'Ферма 2', 'Ферма 3'][i], solana: sol, evm: null, wallet: 'w', index: i + 1 }))
+  let accounts = kind === 'welcome' ? [] : [acc, ...ext], unlocked = kind === 'open', open = kind === 'open'
+  let folders: unknown[] = JSON.parse(localStorage.getItem('mockFolders') ?? '[]')
   const own: Record<string, string> = {}
   const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
   let agentOn = false, waiting: unknown = null
@@ -20,6 +25,11 @@ export function install(kind: string) {
     switch (cmd) {
       case 'vault_state': return { accounts, unlocked, open }
       case 'pending_list': return []
+      case 'folders_get': return folders
+      case 'folders_set': folders = a.list; localStorage.setItem('mockFolders', JSON.stringify(folders)); return null
+      case 'batch_plan': await wait(700); return waiting = { id: 'b2', by: 'owner', network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
+        total: (a.sources.length * 0.4).toFixed(6), fees: (a.sources.length * 0.000005).toFixed(6),
+        rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.solana ?? '', balance: '0.400005', amount: '0.4', fee: '0.000005', left: '0' })) }
       case 'sol_history': await wait(400); return [1, 2, 3].map(i => ({ sig: `demoSig${i}`.padEnd(88, String(i)), time: 1791400000 - i * 86400, ok: true }))
       case 'sol_tx': await wait(300); return { sig: a.sig, time: 1791400000, ok: true, fee: a.sig.endsWith('2') ? '5000' : null, peer: 'Fk7aUsdcDemoMint1111111111111111111111111111',
         moves: a.sig.endsWith('2') ? [{ mint: null, amount: '100000000', decimals: 9, incoming: false }] : [{ mint: a.sig.endsWith('3') ? 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' : null, amount: a.sig.endsWith('3') ? '5000000' : '250000000', decimals: a.sig.endsWith('3') ? 6 : 9, incoming: true }] }

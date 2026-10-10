@@ -73,6 +73,21 @@ Mainnet gate (history): ~~durable pending-send record + restart recovery~~; ~~de
   journals all before sending. Dev builds refuse mainnet requests. Tests: agent::limits, agent::batch_live (local
   validator), e2e dev app + adapter + CDP confirm (3 sources, all finalized, exact sums). Not yet: tokens, EVM.
 
+**Опоры продукта (Валентин 11.10, после разговора с Codex): дополнения · папки адресов · ИИ — на них упор**
+- Папки: свои счета (и адреса для просмотра) собраны в именованные папки. Папка = своя страница: счета с балансами в
+  сети, итог по папке; «Перевести со всех» — ручной пакет на один адрес (тот же неизменяемый план и тот же лист
+  подтверждения, что у запросов агента, один пароль на весь пакет; ИИ не нужен). Папки хранит ядро в отдельном
+  файле рядом с хранилищем (не секрет), чтобы их видели и ИИ, и дополнения. v1: SOL; дальше токены SPL, EVM (монета
+  и ERC-20 по сети), «собрать всё».
+- ИИ: MCP v2 — папки, балансы во всех сетях, история, запросы на токены и EVM, статус. Скилл v2 — жёсткая инструкция:
+  что можно, чего нельзя никогда, порядок действий для каждой задачи, когда отказаться, как сказать владельцу
+  «подтвердите в кошельке». Настройки «ИИ-помощник»: включить, одна строка подключения для Claude Code / Codex,
+  кнопка «проверить связь».
+- Дополнения v2: папки и история через мост, предложения перевода в том же формате плана (подтверждение только в
+  листе кошелька с именем дополнения).
+- Порядок: новые сети (идёт) → папки + ручной пакет SOL → MCP и скилл v2 → предложения от дополнений → пакеты токенов
+  и EVM → TON.
+
 **Add-ons («Дополнения»; model for the owner's word, risks checked with Codex 09.10)**
 - Goal: anyone shapes the wallet without touching the core; private integrations ship as add-ons.
 - Package: a folder (or .zip) with `manifest.json` {id, name, version, permissions, hosts} + one HTML/JS bundle. Installed from a

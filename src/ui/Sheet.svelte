@@ -14,6 +14,7 @@
     id: string; network: string; test: boolean; to: string; newRecipient: boolean; open: boolean; count: number; total: string; fees: string
     rows: { name: string; from: string; balance: string; amount: string; fee: string; left: string }[]
     known?: boolean // the destination is one of the owner's accounts or contacts (set by the app)
+    by?: 'owner' | 'agent' // who made the plan: a folder's «Перевести со всех» or an agent's request
   }
   // keys an add-on hands over (bridge «addKeys»): the sheet shows what they open and asks the wallet password
   export interface Offer { addon: string; addonName: string; items: { name: string; key: string }[] }
@@ -288,7 +289,7 @@
   const titles: Record<Step, string> = {
     start: 'С чего начнём?', reveal: 'Экспорт ключей', keys: 'Ключи счёта', words: 'Запишите 12 слов', check: 'Проверим запись', secret: 'Импорт кошелька',
     save: fresh ? 'Название и пароль' : 'Название', name: 'Новый счёт', evm: 'Ключ Ethereum', ledger: 'Подключить Ledger', pass: open ? 'Поставить пароль' : 'Пароль кошелька',
-    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть', bio: 'Вход по отпечатку',
+    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: batch?.by === 'owner' ? 'Перевод со всех' : 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть', bio: 'Вход по отпечатку',
   }
 </script>
 
@@ -490,17 +491,17 @@
           <p class="amount display">{ru(batch.total)}<small>SOL</small></p>
           <p class="hint">{batch.count} {plural(batch.count)} с ваших счетов на один адрес</p>
           <dl class="sum">
-            <div><dt>Кому</dt><dd class="mono addr">{batch.to}</dd></div>
+            <div><dt>Кому</dt><dd class="mono addr">{g4(batch.to)}</dd></div>
             <div><dt>Сеть</dt><dd class:warn={!batch.test}>{batch.network}{batch.test ? ' · тестовые деньги' : ' · настоящие деньги'}</dd></div>
-            <div><dt>Комиссии сети</dt><dd class="mono">{ru(batch.fees)} SOL</dd></div>
+            <div><dt>Комиссии сети</dt><dd class="num">{ru(batch.fees)} SOL</dd></div>
           </dl>
           {#if !batch.known || batch.newRecipient}<p class="hint warn">{!batch.known ? 'Этого адреса нет среди ваших счетов и контактов. ' : ''}{batch.newRecipient ? 'В сети этот адрес ещё пустой. ' : ''}Сверьте его по буквам: отменить переводы нельзя.</p>{/if}
           <ol class="rows">
             {#each batch.rows as r, i (i)}
-              <li><span><b>{r.name}</b><small class="mono">{shortA(r.from)}</small></span><span class="mono">−{ru(r.amount)}<small>останется {ru(r.left)}</small></span></li>
+              <li><span><b>{r.name}</b><small class="mono">{shortA(r.from)}</small></span><span class="num">−{ru(r.amount)}<small>останется {ru(r.left)}</small></span></li>
             {/each}
           </ol>
-          <p class="hint">Подписано будет ровно это: агент не может поменять суммы или адрес.</p>
+          <p class="hint">Подписано будет ровно это{batch.by === 'owner' ? '' : ': агент не может поменять суммы или адрес'}.</p>
           {#if !batch.open}<label><span class="label">Пароль кошелька</span><span class="field"><input type="password" bind:value={p1} autocomplete="current-password" disabled={!ready} /></span></label>{/if}
           <div class="acts">
             <button class="btn" type="button" onclick={rejectBatch} disabled={busy}>Отклонить</button>
@@ -546,7 +547,7 @@
   .inner { position: relative; }
   .cp { justify-self: start; min-height: 30px; padding: 0 12px; border: 0; border-radius: 999px; background: none; color: var(--ink-2); font-size: 13px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); transition: color 160ms ease, box-shadow 160ms ease; }
   .cp:hover { color: var(--ink); box-shadow: inset 0 0 0 1px rgb(238 235 229 / .3); }
-  section { padding: 24px 24px 16px; display: grid; gap: 16px; transform-origin: 50% 0; }
+  section { padding: 24px 24px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; transform-origin: 50% 0; }
   header { display: flex; align-items: center; gap: 12px; }
   h2 { flex: 1; margin: 0; font-weight: 400; font-size: 24px; letter-spacing: -.02em; }
   .x { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 999px; background: none; color: var(--ink-3); cursor: pointer; transition: color 300ms ease, background-color 300ms ease; }

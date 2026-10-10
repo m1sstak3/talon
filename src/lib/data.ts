@@ -1,7 +1,7 @@
 // Real wallet data: networks, accounts (from the vault + watch-only), balances and history from the Rust core.
 // No keys here: the main window only sees public addresses and numbers.
 import { invoke, isTauri } from '@tauri-apps/api/core'
-import type { Draft } from '../ui/Sheet.svelte'
+import type { Draft, Batch } from '../ui/Sheet.svelte'
 import { t } from './i18n.svelte'
 
 export interface Card {
@@ -222,6 +222,12 @@ export const prepareRevoke = (account: string, c: Chain, p: Perm) => cluster(c)
   : invoke<Draft>('prepare_revoke', { account, chainId: c.chainId, rpc: c.rpc, token: p.token, spender: p.spender })
 export const openAddress = (address: string, c: Chain) => invoke('open_address', { address, cluster: cluster(c) ?? `evm:${c.chainId}` })
 export const openTx = (sig: string, c: Chain) => invoke('open_tx', { sig, cluster: cluster(c) ?? `evm:${c.chainId}` })
+// folders (core folders.rs): named groups of account ids, own and watch-only, kept next to the vault
+export interface Folder { id: string; name: string; accounts: string[] }
+export const foldersGet = () => invoke<Folder[]>('folders_get')
+export const foldersSet = (list: Folder[]) => invoke<void>('folders_set', { list })
+// a batch the owner makes by hand: the same immutable plan and confirmation sheet as an agent's request
+export const batchPlan = (network: string, to: string, sources: { account: string; amount: string }[]) => invoke<Batch>('batch_plan', { network, to, sources })
 export const usdPrices = (mints: string[], coins: string[]) => invoke<Record<string, number>>('usd_prices', { mints, coins })
 // swap (Solana mainnet): a live quote, then the core builds, checks and dry-runs the exact transaction
 export interface SwapQuote { in_amount: string; out_amount: string; min_out: string; out_decimals: number; impact: string; route: string; fee_bps: number }
