@@ -138,6 +138,8 @@
     const at = still ? 1 : dir > 0 ? 1.04 : 0.96
     return { delay: still ? 0 : 100, duration: still ? 120 : 320, easing: glass, css: (t: number) => `opacity:${t};transform:scale(${at + (1 - at) * t})` }
   }
+  // an address to check letter by letter: groups of four (the clipboard and the core keep the raw string)
+  const g4 = (a: string) => a.match(/.{1,4}/g)?.join(' ') ?? a
   const focusFirst = (n: HTMLElement) => { if (!matchMedia('(pointer: fine)').matches) return; setTimeout(() => n.querySelector<HTMLElement>('input, textarea, button.go')?.focus({ preventScroll: true }), still ? 0 : 420) }
 
   // ---------------------------------------------------------------- actions
@@ -424,10 +426,10 @@
             <!-- a revoke moves no money: it takes back «may spend» from one address -->
             <p class="amount display">{sym}<small>разрешение на траты</small></p>
             <dl class="sum">
-              <div><dt>У кого</dt><dd class="mono addr">{draft.to}</dd></div>
+              <div><dt>У кого</dt><dd class="mono addr">{g4(draft.to)}</dd></div>
               <div><dt>Токен</dt><dd class="mono addr">{draft.mint}</dd></div>
-              <div><dt>Комиссия сети</dt><dd class="mono">{draft.feeMax ? 'до ' : ''}{ru(draft.fee)} {nat}</dd></div>
-              <div><dt>Счёт</dt><dd>{draft.account}<br /><span class="mono addr faint">{draft.from}</span></dd></div>
+              <div><dt>Комиссия сети</dt><dd class="num">{draft.feeMax ? 'до ' : ''}{ru(draft.fee)} {nat}</dd></div>
+              <div><dt>Счёт</dt><dd>{draft.account}<br /><span class="mono addr faint">{g4(draft.from)}</span></dd></div>
               <div><dt>Сеть</dt><dd class:warn={!draft.test}>{draft.network}</dd></div>
             </dl>
             <p class="hint">После отзыва этот адрес больше не сможет тратить ваш токен. Деньги остаются на месте.</p>
@@ -438,19 +440,19 @@
             <p class="amount display get">≈ {ru(draft.swap.out)}<small>{draft.swap.sym ?? 'ед. токена'}</small></p>
             <!-- owner 10.10: what leaves, what arrives, the floor, the account. No route, fee or network rows, no explanations -->
             <dl class="sum">
-              <div><dt>Не меньше</dt><dd class="mono">{ru(draft.swap.min)} {draft.swap.sym ?? ''}</dd></div>
+              <div><dt>Не меньше</dt><dd class="num">{ru(draft.swap.min)} {draft.swap.sym ?? ''}</dd></div>
               {#if !draft.swap.sym}<div><dt>Получаете токен</dt><dd class="mono addr">{draft.swap.outMint}</dd></div>{/if}
               <div><dt>Со счёта</dt><dd>{draft.account}</dd></div>
             </dl>
           {:else}
           <p class="amount display">{ru(draft.amount)}<small>{sym}</small></p>
           <dl class="sum">
-            <div><dt>Кому</dt><dd class="mono addr">{draft.to}</dd></div>
+            <div><dt>Кому</dt><dd class="mono addr">{g4(draft.to)}</dd></div>
             {#if draft.mint}<div><dt>Токен</dt><dd class="mono addr">{draft.mint}</dd></div>{/if}
-            <div><dt>Комиссия сети</dt><dd class="mono">{draft.feeMax ? 'до ' : ''}{ru(draft.fee)} {nat}</dd></div>
-            {#if draft.rent !== '0'}<div><dt>Счёт токена у получателя</dt><dd class="mono">{draft.rent} SOL</dd></div>{/if}
-            <div><dt>Всего спишется</dt><dd class="mono">{draft.feeMax ? 'не больше ' : ''}{draft.mint ? `${ru(draft.amount)} ${sym} + ` : ''}{ru(draft.solTotal)} {nat}</dd></div>
-            <div><dt>Со счёта</dt><dd>{draft.account}<br /><span class="mono addr faint">{draft.from}</span></dd></div>
+            <div><dt>Комиссия сети</dt><dd class="num">{draft.feeMax ? 'до ' : ''}{ru(draft.fee)} {nat}</dd></div>
+            {#if draft.rent !== '0'}<div><dt>Счёт токена у получателя</dt><dd class="num">{draft.rent} SOL</dd></div>{/if}
+            <div><dt>Всего спишется</dt><dd class="num">{draft.feeMax ? 'не больше ' : ''}{draft.mint ? `${ru(draft.amount)} ${sym} + ` : ''}{ru(draft.solTotal)} {nat}</dd></div>
+            <div><dt>Со счёта</dt><dd>{draft.account}<br /><span class="mono addr faint">{g4(draft.from)}</span></dd></div>
             <div><dt>Сеть</dt><dd class:warn={!draft.test}>{draft.network}{draft.test ? ' · тестовые деньги' : ' · настоящие деньги'}</dd></div>
           </dl>
           <p class="hint" class:warn={draft.newRecipient}>{draft.newRecipient
@@ -590,7 +592,7 @@
   .sum div { display: grid; grid-template-columns: 128px 1fr; gap: 10px; align-items: baseline; }
   .sum dt { font-size: 13px; color: var(--ink-3); }
   .sum dd { margin: 0; font-size: 15px; user-select: text; }
-  .addr { font-size: 13px; word-break: break-all; line-height: 20px; }
+  .addr { font-size: 13px; overflow-wrap: anywhere; text-wrap: balance; line-height: 20px; } /* breaks between groups of four, never inside one */
   .faint { color: var(--ink-3); font-size: 12px; }
   .rows { margin: 0; padding: 0; list-style: none; display: grid; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); }
   .rows li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
