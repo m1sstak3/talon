@@ -280,7 +280,7 @@ const ru = {
   'addr.nets': 'Работает в сетях: {n}',
   'addr.tapCopy': 'Нажмите, чтобы скопировать',
   'addr.qr': 'QR‑код',
-  'addr.hideQr': 'Скрыть QR‑код',
+  'addr.recvIn': 'Получить в сети {net}',
   'addr.name': 'Имя',
   'addr.address': 'Адрес',
   'addr.add': 'Добавить',

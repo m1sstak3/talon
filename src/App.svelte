@@ -87,7 +87,7 @@
   let copied = $state('')
   let busy = $state(false)
   let addrTab = $state<'mine' | 'contacts' | 'perms'>('mine')
-  let qrOpen = $state(''), netsOpen = $state('')
+  let netsOpen = $state('')
 
   const accountList = $derived([...vaultAccounts, ...watchAccounts])
   const acc = $derived(accountList.find(a => a.id === accId) ?? accountList[0])
@@ -474,6 +474,11 @@
     void hero?.flip(true, myAddress, chain.name.replace(/ Mainnet$/, ''), t('recv.cardNote', { sym: chain.symbol })) // never dropped behind another animation (critique 10.10)
     loadHistory() // quiet: fills «recent arrivals» when the node (or the EVM explorer) allows
   }
+  // Receive in a given network (from Addresses): the card turns in first, then flips to its QR
+  async function receiveOn(id: string) {
+    if (id !== chainId) await setChain(id)
+    receive()
+  }
   function send(prefill = '') {
     if (view === 'receive') hero?.flip(false)
     sel = card?.id ?? ''
@@ -498,8 +503,8 @@
     if (view === 'locked') return
     view = 'home'
     // context switches now; the ring turns alongside. Not awaited, not behind the busy lock: rapid clicks retarget
-    if (netDeck().map(c => c.id).join() !== ring) hero?.setDeck(netDeck(), chainId, 'glass', 'update').then(() => hero?.goTo(id))
-    else { hero?.sync(netDeck()); hero?.goTo(id) }
+    if (netDeck().map(c => c.id).join() !== ring) return hero?.setDeck(netDeck(), chainId, 'glass', 'update').then(() => hero?.goTo(id))
+    hero?.sync(netDeck()); return hero?.goTo(id)
   }
   function setAccount(id: string) {
     menu = ''
@@ -1132,7 +1137,8 @@
       <button class="back" onclick={back}><Icon name="back" />{t('act.back')}</button>
       <h2 class="display t s"><span class="line"><span>{t('recv.title', { sym: chain.symbol })}</span></span></h2>
       <!-- the card's back carries the QR, the column the address (owner 09.10: nothing twice); without 3D both stay here -->
-      <p class="lead appear" class:warn={!chain.test} style="--d:60ms">{t('recv.only', { net: chain.name })}{#if chain.kind === 'evm'} {t('recv.evm')}{/if}</p>
+      <p class="lead appear" class:warn={!chain.test} style="--d:60ms">{t('recv.only', { net: chain.name })}</p>
+      {#if chain.kind === 'evm'}<p class="muted small appear" style="--d:70ms">{t('recv.evm')}</p>{/if}
       {#if hero}<p class="muted appear" style="--d:80ms">{t('recv.leadCard')}</p>
         <p class="addr mono appear" style="--d:120ms">{myAddress.match(/.{1,4}/g)?.join(' ')}</p>
       {:else}
@@ -1149,7 +1155,7 @@
         <ul class="tx appear" style="--d:320ms">
           {#each incoming as x (x.sig)}
             <li><span class="dir in"><Icon name="receive" size={16} /></span>
-              <span><b class="mono inb">{x.d.moves.filter(m => m.incoming).map(moveText).join('  ')}</b><small class="faint">{#if x.d.peer}{t('hist.from', { a: peerName(x.d.peer) })}{' · '}{/if}{when(x.time)}</small></span><span></span></li>
+              <span><b class="num inb">{x.d.moves.filter(m => m.incoming).map(moveText).join('  ')}</b><small class="faint">{#if x.d.peer}{t('hist.from', { a: peerName(x.d.peer) })}{' · '}{/if}{when(x.time)}</small></span><span></span></li>
           {/each}
         </ul>
       {/if}
@@ -1299,7 +1305,7 @@
       </div>
       {#if addrTab === 'perms'}
         <!-- who may spend this account's tokens on this network, and one tap to take it back (t-019) -->
-        <p class="note appear">{t('perm.lead', { net: chain.name })}{#if chain.kind === 'evm'} {t('perm.evmNote')}{/if}</p>
+        <p class="note appear">{t('perm.lead', { net: chain.name })}{#if chain.kind === 'evm'}{' '}{t('perm.evmNote')}{/if}</p>
         {#if !myAddress}<p class="faint appear">{t('perm.noAddr')}</p>
         {:else if permState === 'loading' && !perms.length}<p class="faint">{t('perm.loading')}</p>
         {:else if permState && permState !== 'loading'}<p class="note">{netErr(permState)}</p>
@@ -1322,12 +1328,11 @@
             <!-- the address itself is the biggest copy target; groups of four for reading, the raw string goes to the clipboard -->
             <button class="addr mono acopy" onclick={() => copy(g.a)} title={t('addr.tapCopy')}>{g.a.match(/.{1,4}/g)?.join(' ')}</button>
             {#if g.nets.length > 1}<button class="netsl" class:open={netsOpen === g.k} onclick={() => (netsOpen = netsOpen === g.k ? '' : g.k)} aria-expanded={netsOpen === g.k}>{t('addr.nets', { n: g.nets.length })}<Icon name="chevron" size={14} /></button>
-              {#if netsOpen === g.k}<p class="netsv" transition:slide={{ duration: still() ? 0 : 220 }}>{g.nets.map(c => c.name.replaceAll(' ', '\u00a0')).join(' · ')}</p>{/if}{/if}
+              {#if netsOpen === g.k}<div class="chips netsv" transition:slide={{ duration: still() ? 0 : 220 }}>{#each g.nets as c (c.id)}<button class="tag" onclick={() => receiveOn(c.id)} title={t('addr.recvIn', { net: c.name })}>{c.name}</button>{/each}</div>{/if}{/if}
             <div class="acts">
               <button class="btn small solid" onclick={() => copy(g.a)}><Icon name={copied === g.a ? 'check' : 'copy'} size={16} />{copied === g.a ? t('act.copied') : t('act.copy')}</button>
-              <button class="btn small" onclick={() => (qrOpen = qrOpen === g.k ? '' : g.k)}>{qrOpen === g.k ? t('addr.hideQr') : t('addr.qr')}</button>
+              <button class="btn small" onclick={() => receiveOn(chain.kind === g.k ? chainId : (g.nets.find(c => fav.includes(c.id)) ?? g.nets[0]).id)}>{t('addr.qr')}</button>
             </div>
-            {#if qrOpen === g.k}<div class="qrrow appear"><Qr value={g.a} size={180} /></div>{/if}
           </section>
         {/each}
         {#if acc && !acc.evm}
@@ -1733,7 +1738,7 @@
   .netsl:hover { color: var(--ink-2); }
   .netsl :global(svg) { transition: transform 220ms var(--ease); }
   .netsl.open :global(svg) { transform: rotate(180deg); }
-  .netsv { font-size: 13px; line-height: 20px; color: var(--ink-2); }
+  .netsv { padding-top: 4px; }
   .mine .acts { margin: 16px 0 0; }
   .addc { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr) auto; gap: 8px; margin: 16px 0; }
   .addc .field, .addc input { min-width: 0; }
