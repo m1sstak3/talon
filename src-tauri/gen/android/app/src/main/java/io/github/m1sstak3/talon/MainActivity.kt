@@ -1,5 +1,6 @@
 package io.github.m1sstak3.talon
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.pm.ApplicationInfo
 import android.system.Os
@@ -62,6 +63,10 @@ class AppBridge(private val a: MainActivity) {
   @JavascriptInterface fun paste(): String {
     val clip = (a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip ?: return ""
     return if (clip.itemCount > 0) clip.getItemAt(0).coerceToText(a).toString().take(200) else ""
+  }
+  // an address to the clipboard (public text: not marked sensitive, not wiped); a WebView's own write can fail silently
+  @JavascriptInterface fun copy(text: String) {
+    a.runOnUiThread { (a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("", text.take(200))) }
   }
   @JavascriptInterface fun haptic(kind: String) {
     a.runOnUiThread {

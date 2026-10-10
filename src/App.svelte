@@ -88,7 +88,7 @@
   let copied = $state('')
   let busy = $state(false)
   let addrTab = $state<'mine' | 'contacts' | 'perms'>('mine')
-  let qrOpen = $state('')
+  let qrOpen = $state(''), netsOpen = $state('')
 
   const accountList = $derived([...vaultAccounts, ...watchAccounts])
   const acc = $derived(accountList.find(a => a.id === accId) ?? accountList[0])
@@ -597,8 +597,11 @@
   }
   let stopScan: (() => void) | null = null
   const cancelScan = () => { stopScan?.(); import('@tauri-apps/plugin-barcode-scanner').then(bs => bs.cancel()).catch(() => {}) }
+  // «Скопировано» only when it really was (owner 11.10: copying felt unreliable); Android through the app's own clipboard
   async function copy(text: string) {
-    try { await navigator.clipboard.writeText(text) } catch {}
+    const app = (window as unknown as { __cwApp?: { copy?(t: string): void } }).__cwApp
+    try { if (app?.copy) app.copy(text); else await navigator.clipboard.writeText(text) } catch { haptic('err'); flash(t('act.copyFail')); return }
+    haptic('tick')
     copied = text
     setTimeout(() => (copied = ''), 1600)
   }
@@ -1243,11 +1246,13 @@
           </ul>
         {/if}
       {:else if addrTab === 'mine'}
-        {#each [{ k: 'solana', title: t('addr.solana'), a: acc?.solana ?? '', nets: visibleChains.filter(c => c.kind === 'solana') }, { k: 'evm', title: t('addr.evm'), a: acc?.evm ?? '', nets: visibleChains.filter(c => c.kind === 'evm') }].filter(g => g.a) as g, gi (g.k)}
+        {#each [{ k: 'solana', title: t('addr.solana'), a: acc?.solana ?? '', nets: chainList.filter(c => c.kind === 'solana' && (showTest || !c.test)) }, { k: 'evm', title: t('addr.evm'), a: acc?.evm ?? '', nets: chainList.filter(c => c.kind === 'evm' && (showTest || !c.test)) }].filter(g => g.a) as g, gi (g.k)}
           <section class="mine appear" style="--d:{80 + gi * 80}ms">
-            <h3 class="sh">{g.title}</h3>
-            <p class="addr mono">{g.a.match(/.{1,4}/g)?.join(' ')}</p>
-            <p class="nets">{#each g.nets as c}<span class="ntag">{@render chainDot(c)}{c.name}</span>{/each}</p>
+            <h3 class="fam">{g.title}</h3>
+            <!-- the address itself is the biggest copy target; groups of four for reading, the raw string goes to the clipboard -->
+            <button class="addr mono acopy" onclick={() => copy(g.a)} title={t('addr.tapCopy')}>{g.a.match(/.{1,4}/g)?.join(' ')}</button>
+            {#if g.nets.length > 1}<button class="netsl" class:open={netsOpen === g.k} onclick={() => (netsOpen = netsOpen === g.k ? '' : g.k)} aria-expanded={netsOpen === g.k}>{t('addr.nets', { n: g.nets.length })}<Icon name="chevron" size={14} /></button>
+              {#if netsOpen === g.k}<p class="netsv" transition:slide={{ duration: still() ? 0 : 220 }}>{g.nets.map(c => c.name.replaceAll(' ', '\u00a0')).join(' · ')}</p>{/if}{/if}
             <div class="acts">
               <button class="btn small solid" onclick={() => copy(g.a)}><Icon name={copied === g.a ? 'check' : 'copy'} size={16} />{copied === g.a ? t('act.copied') : t('act.copy')}</button>
               <button class="btn small" onclick={() => (qrOpen = qrOpen === g.k ? '' : g.k)}>{qrOpen === g.k ? t('addr.hideQr') : t('addr.qr')}</button>
@@ -1258,7 +1263,7 @@
         {#if acc && !acc.evm}
           <!-- owner 09.10: a Solana-key account had no Ethereum address and nothing said why -->
           <section class="mine appear" style="--d:160ms">
-            <h3 class="sh">{t('addr.evm')}</h3>
+            <h3 class="fam">{t('addr.evm')}</h3>
             <p class="note">{acc.watch ? t('addr.noEvmWatch') : t('addr.noEvm')}</p>
             {#if !acc.watch && !acc.ledger}<div class="acts">
               <button class="btn small solid" onclick={e => openSheet('add-evm', e, undefined, undefined, acc?.id)} disabled={!!sheet}><Icon name="plus" size={16} />{t('addr.addEvm')}</button>
@@ -1470,7 +1475,7 @@
   .chip em, .mi em { font-style: normal; font-size: 12px; padding: 1px 7px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); }
   .cdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .cdot.real { background: var(--ember); }
-  .mi .cdot.real, .ntag .cdot.real { background: var(--ink-2); } /* ember marks the current network only */
+  .mi .cdot.real { background: var(--ink-2); } /* ember marks the current network only */
   .mi .cdot { margin: 0 4px; } /* row text starts at 36px */
   .cdot.test { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
 
@@ -1633,9 +1638,17 @@
   .sum .more { display: grid; gap: 8px; justify-content: stretch; }
   .wide { justify-content: center; width: 100%; margin-top: 8px; }
 
-  .mine { margin-top: 8px; }
-  .nets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-  .ntag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); padding: 2px 10px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); }
+  .mine { margin-top: 24px; }
+  .mine + .mine { padding-top: 24px; border-top: 1px solid var(--line); }
+  .fam { margin: 0; font-size: 16px; font-weight: 600; line-height: 24px; }
+  .acopy { display: block; width: 100%; margin-top: 8px; padding: 12px 16px; border: 0; border-radius: var(--r-sm); background: rgb(238 235 229 / .04); box-shadow: inset 0 0 0 1px var(--line); text-align: start; cursor: copy; transition: background-color 160ms ease; }
+  .acopy:hover { background: rgb(238 235 229 / .07); }
+  .acopy:active { background: rgb(238 235 229 / .1); }
+  .netsl { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--ink-3); font-size: 13px; cursor: pointer; transition: color 160ms ease; }
+  .netsl:hover { color: var(--ink-2); }
+  .netsl :global(svg) { transition: transform 220ms var(--ease); }
+  .netsl.open :global(svg) { transform: rotate(180deg); }
+  .netsv { font-size: 13px; line-height: 20px; color: var(--ink-2); }
   .mine .acts { margin: 16px 0 0; }
   .addc { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr) auto; gap: 8px; margin: 16px 0; }
   .addc .field, .addc input { min-width: 0; }
