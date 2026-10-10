@@ -1,6 +1,9 @@
 package io.github.m1sstak3.talon
 
 import android.content.ClipboardManager
+import android.content.pm.ApplicationInfo
+import android.system.Os
+import java.io.File
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +25,9 @@ class MainActivity : TauriActivity() {
     // a wallet: no screenshots, no screen recording, a blank card in Recents — from the first frame (PLAN: FLAG_SECURE
     // before render). The core's capture check relies on this being always on.
     window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+    // a debuggable (development) build keeps its keys in a throwaway vault of its own, as the desktop dev runs do with
+    // CW_VAULT; the core then allows the local test network. A release build is never debuggable: never set there.
+    if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) Os.setenv("CW_VAULT", File(filesDir, "dev-vault/vault.json").path, true)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     // edge to edge: the system no longer shrinks the page for the keyboard, so the page is lifted by the keyboard's

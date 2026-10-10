@@ -435,7 +435,7 @@
             {#if draft.mint}<div><dt>Токен</dt><dd class="mono addr">{draft.mint}</dd></div>{/if}
             <div><dt>Комиссия сети</dt><dd class="mono">{draft.feeMax ? 'до ' : ''}{ru(draft.fee)} {nat}</dd></div>
             {#if draft.rent !== '0'}<div><dt>Счёт токена у получателя</dt><dd class="mono">{draft.rent} SOL</dd></div>{/if}
-            <div><dt>Всего спишется</dt><dd class="mono">{draft.feeMax ? 'не больше ' : ''}{draft.mint ? `${draft.amount} ${sym} + ` : ''}{draft.solTotal} {nat}</dd></div>
+            <div><dt>Всего спишется</dt><dd class="mono">{draft.feeMax ? 'не больше ' : ''}{draft.mint ? `${ru(draft.amount)} ${sym} + ` : ''}{ru(draft.solTotal)} {nat}</dd></div>
             <div><dt>Со счёта</dt><dd>{draft.account}<br /><span class="mono addr faint">{draft.from}</span></dd></div>
             <div><dt>Сеть</dt><dd class:warn={!draft.test}>{draft.network}{draft.test ? ' · тестовые деньги' : ' · настоящие деньги'}</dd></div>
           </dl>
@@ -447,7 +447,7 @@
           {#if !draft.open}<label><span class="label">Пароль кошелька</span><span class="field"><input type="password" bind:value={p1} autocomplete="current-password" disabled={!ready} /></span></label>{/if}
           <div class="acts">
             <button class="btn solid go hold" type="button" style:--hold={hold} disabled={busy || !ready}
-              onpointerdown={press} onpointerup={release} onpointerleave={release}
+              onpointerdown={press} onpointerup={release} onpointerleave={release} oncontextmenu={e => e.preventDefault()}
               onkeydown={e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); press() } }}
               onkeyup={e => { if (e.key === ' ' || e.key === 'Enter') release() }}>
               <span>{busy ? (draft?.ledger ? 'Подтвердите на Ledger' : draft?.revoke ? 'Отзываем' : draft?.swap ? 'Меняем' : 'Отправляем') : draft?.revoke ? 'Удерживайте, чтобы отозвать' : draft?.swap ? 'Удерживайте, чтобы обменять' : 'Удерживайте, чтобы отправить'}</span>
@@ -489,7 +489,7 @@
           <div class="acts">
             <button class="btn" type="button" onclick={rejectBatch} disabled={busy}>Отклонить</button>
             <button class="btn solid go hold" type="button" style:--hold={hold} disabled={busy || !ready}
-              onpointerdown={press} onpointerup={release} onpointerleave={release}
+              onpointerdown={press} onpointerup={release} onpointerleave={release} oncontextmenu={e => e.preventDefault()}
               onkeydown={e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); press() } }}
               onkeyup={e => { if (e.key === ' ' || e.key === 'Enter') release() }}>
               <span>{busy ? 'Отправляем' : 'Удерживайте, чтобы отправить'}</span>
@@ -587,7 +587,8 @@
   .rows small { font-size: 12px; color: var(--ink-3); }
 
   /* hold to send: an ember fill grows under the label; release early and it drains */
-  .hold { position: relative; overflow: hidden; touch-action: none; }
+  /* a phone's long press opens a menu and cancels the touch half way through the hold: no menu, no text selection */
+  .hold { position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .hold::before { content: ''; position: absolute; inset: 0; z-index: 0; opacity: 1; background: var(--ember); transform-origin: 0 50%; transform: scaleX(var(--hold, 0)); transition: none; } /* replaces the hover light */
   .hold span { position: relative; }
 

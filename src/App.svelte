@@ -6,7 +6,7 @@
   import { listen } from '@tauri-apps/api/event'
   import { isTauri } from '@tauri-apps/api/core'
   import { onBackButtonPress } from '@tauri-apps/api/app'
-  import { createHero, iconURL, THEMES, type Hero, type Theme } from './lib/hero'
+  import { createHero, iconURL, type Hero, type Theme } from './lib/hero'
   import {
     chains as seedChains, fmt, short, isAddress, isEvmAddress, addressFor, coreAvailable, cluster,
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
@@ -54,9 +54,9 @@
   $effect(() => { if (!menu) { plus = false; addingNet = false; moreNets = false } })
   let sel = $state<string>('') // selected token id
   // background theme (Settings → «Фон»), per device
-  let theme = $state<Theme>((() => { try { const v = localStorage.getItem('theme') as Theme; return THEMES.includes(v) ? v : 'imprint' } catch { return 'imprint' } })()) // «Отпечаток» first (Codex 10.10: it ties the background to the cards)
-  function setTheme(v: Theme) { theme = v; try { localStorage.setItem('theme', v) } catch {} ; hero?.setTheme(v) }
-  const THEME_NAME: Record<Theme, string> = { imprint: 'Отпечаток', glass: 'Стекло', relief: 'Рельеф' }
+  // ponytail: one quiet background until the new direction (owner 10.10: the three are rejected); «Отпечаток» drew a
+  // second dark plate behind the docked card that read on a phone as one card passing through another
+  const theme: Theme = 'relief'
   let autolock = $state((() => { try { return Number(localStorage.getItem('autolock')) || 15 } catch { return 15 } })())
 
   let vaultAccounts = $state<Account[]>([])
@@ -1041,6 +1041,10 @@
           {#if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
         </label>
         <div class="chips appear" style="--d:120ms">
+          <!-- one tap: the owner's other accounts first, then the address book -->
+          {#each accountList.filter(a => a.id !== acc?.id && !a.watch && valid(addressFor(a, chain))).slice(0, 3) as a (a.id)}
+            <button type="button" class="tag" class:cur={to === addressFor(a, chain)} onclick={() => (to = addressFor(a, chain))}>{a.name}</button>
+          {/each}
           {#each contactList.filter(c => valid(c.address)).slice(0, 4) as c}
             <button type="button" class="tag" class:cur={contactHit === c} onclick={() => (to = c.name)}>{c.name}</button>
           {/each}
@@ -1245,9 +1249,7 @@
         <div class="set"><span>{t('set.lang')}</span>
           <div class="seg small" use:pad={0}><span class="seg-pad"></span><button data-seg class="cur" onclick={() => (i18n.lang = 'ru')}>Русский</button></div>
         </div>
-        {#if THEMES.length > 1}<div class="set"><span>{t('set.theme')}</span>
-          <div class="seg small" use:pad={THEMES.indexOf(theme)}><span class="seg-pad"></span>{#each THEMES as v}<button data-seg class:cur={theme === v} onclick={() => setTheme(v)}>{THEME_NAME[v]}</button>{/each}</div>
-        </div>{/if}
+        <!-- «Фон» hidden (owner 10.10: the backgrounds are being redone from scratch; one stays meanwhile) -->
         <label class="set"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
         {#if pinned.length}<div class="set"><span>{t('set.nets')}</span>
           <div class="chips">{#each chainList.filter(c => pinned.includes(c.id)) as c (c.id)}<button class="tag" onclick={() => unpin(c.id)} aria-label={`${c.name}: убрать`}>{c.name}<Icon name="close" size={12} /></button>{/each}</div></div>{/if}
