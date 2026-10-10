@@ -47,6 +47,7 @@ export function install(kind: string) {
       case 'fee_state': return { owner: '9C8S2aM3bgTApyiZoSLhmcdDzhYiFdvbTLZdLbY4StBJ', bps: 20, missing: 3 }
       case 'agent_state': return { on: agentOn, waiting }
       case 'agent_access': agentOn = a.on; return agentOn
+      case 'agent_paths': return { mcp: String.raw`C:\Program Files\Talon\agent\talon-mcp.mjs`, skill: String.raw`C:\Program Files\Talon\agent\SKILL.md` }
       case 'batch_reject': waiting = null; return null
       case 'batch_confirm': await wait(900); if (!open && a.pass !== 'demo-pass') throw 'неверный пароль'; waiting = null; return { sent: 3, total: 3 }
       case 'clip_secret': await navigator.clipboard.writeText(a.text).catch(() => {}); return 30
