@@ -15,6 +15,12 @@ export const icons = {
   shield: 'M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z',
   folder: 'M3 7h7l2 2h9v10H3z',
   swap: 'M7 4v14M3 14l4 4 4-4M17 20V6M21 10l-4-4-4 4',
-  flip: 'M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4',
+  // phone tab bar and send field
+  wallet: 'M4 7h15a1 1 0 0 1 1 1v11H5a1 1 0 0 1-1-1zM4 7V6a2 2 0 0 1 2-2h11v3M15.5 13.5h1',
+  history: 'M3.5 12a8.5 8.5 0 1 0 2.5-6M3.5 4v4h4M12 8v4.5l3 1.8',
+  book: 'M6 4h13v16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM4 17a2 2 0 0 1 2-2h13M9 8.5h6',
+  paste: 'M9 3.5h6v3H9zM9 5H5.5v15.5h13V5H15',
+  scan: 'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5M4 12h16',
+  flip:'M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4',
 } as const
 export type IconName = keyof typeof icons

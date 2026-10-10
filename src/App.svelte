@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { Tween } from 'svelte/motion'
-  import { slide } from 'svelte/transition'
+  import { slide, fade } from 'svelte/transition'
   import { cubicOut, cubicIn } from 'svelte/easing'
   import { listen } from '@tauri-apps/api/event'
   import { isTauri } from '@tauri-apps/api/core'
+  import { onBackButtonPress } from '@tauri-apps/api/app'
   import { createHero, iconURL, THEMES, type Hero, type Theme } from './lib/hero'
   import {
     chains as seedChains, fmt, short, isAddress, isEvmAddress, addressFor, coreAvailable, cluster,
@@ -15,10 +16,11 @@
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
   import { t, i18n } from './lib/i18n.svelte'
-  import { pad, countInto } from './lib/actions'
+  import { pad, countInto, dragDown, pullRefresh, haptic } from './lib/actions'
   import Roll from './ui/Roll.svelte'
   import Icon from './ui/Icon.svelte'
   import Qr from './ui/Qr.svelte'
+  import Keypad from './ui/Keypad.svelte'
   import WindowBar from './ui/WindowBar.svelte'
   import Sheet, { type SheetMode, type Draft, type Batch, type Offer } from './ui/Sheet.svelte'
   import Intro, { type Kind } from './ui/Intro.svelte'
@@ -39,7 +41,12 @@
   let menu = $state<'' | 'net' | 'acc'>('')
   let addingNet = $state(false), plus = $state(false) // account menu: the «+» row folds out create / import / watch
   // menus open and close the same way, from the chip that owns them (owner 09.10: both directions smooth)
-  function pop(_n: Element, { out = false } = {}) {
+  // phone: menus are sheets from the bottom edge; a sheet pulled partway down leaves from where the finger let go
+  function pop(n: Element, { out = false } = {}) {
+    if (phone) {
+      const from = out ? parseFloat((n as HTMLElement).style.transform.match(/translateY\(([\d.]+)px/)?.[1] ?? '0') : 0
+      return { duration: still() ? 0 : out ? 220 : 320, easing: out ? cubicIn : cubicOut, css: (k: number) => `transform:translateY(calc(${from * k}px + ${(1 - k) * 100}%))` }
+    }
     return { duration: still() ? 0 : out ? 150 : 220, easing: out ? cubicIn : cubicOut, css: (k: number) => `opacity:${k};transform:translateY(${(1 - k) * -6}px) scale(${0.97 + 0.03 * k})` }
   }
   // a click anywhere outside the open menu closes it, like every menu on the system
@@ -154,6 +161,21 @@
     { id: 'history', label: () => t('nav.history') },
     { id: 'addresses', label: () => t('nav.addresses') },
   ] as const
+  // phone: the sections live in a tab bar under the thumb; settings is one of them
+  const TABS = [
+    { id: 'home', icon: 'wallet', label: () => t('nav.wallet') },
+    { id: 'history', icon: 'history', label: () => t('nav.history') },
+    { id: 'addresses', icon: 'book', label: () => t('nav.addresses') },
+    { id: 'settings', icon: 'gear', label: () => t('nav.settings') },
+  ] as const
+  const tabOf = (v: View) => (v === 'history' || v === 'addresses' || v === 'settings' ? v : 'home')
+  // the current tab again: back to its top (and home from a token), like every phone app
+  function tab(v: View) {
+    if (view === v) { colEl?.scrollTo({ top: 0, behavior: still() ? 'auto' : 'smooth' }); return }
+    haptic('tick'); go(v)
+  }
+  // pull to refresh where a screen shows the network's numbers
+  const pullFor = (v: View) => v === 'home' ? refresh : v === 'history' ? () => { histAt[histKey(myAddress, chain)] = 0; return loadHistory() } : null
   const navActive = $derived(view === 'history' ? 1 : view === 'addresses' ? 2 : view === 'settings' ? -1 : view === 'addon' ? NAV.length + addons.findIndex(a => a.id === addonId) : 0)
 
   // ---------------------------------------------------------------- hero: every enabled network is a card on the ring
@@ -349,7 +371,7 @@
     if (m === 'addon-keys') { keyOffer?.({ added: done }); keyOffer = null; if (done) flash(t('addon.added'), undefined, true) }
     if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
     sheet = null
-    hero?.rest(false)
+    hero?.rest(away) // a phone tab without the card keeps the scene asleep
     if (enterAfterSheet) { enterAfterSheet = false; enter() }
     else if (view === 'locked') hero?.prime(0)
     if (done && m === 'send' && wasSwap) { view = 'home'; hero?.swapCard(netCard(chain)); setTimeout(refresh, 2500) } // a swap: one turn of the card, then the new balances
@@ -379,13 +401,24 @@
   const netErr = (e: string) => { const k = e.replace(/^Error:\s*/, ''); return t(`err.${k}` as Parameters<typeof t>[0]) ?? (/[а-яё]/i.test(k) ? k : t('err.network request failed')) }
   function flash(text: string, sub?: string, ok = false) { toast = { text, sub, ok }; setTimeout(() => (toast = null), 3600) }
 
-  // phone: the card stands in the band between the header and the column, whatever the status bar or font size
+  // phone: the card is part of the page — it stands in a hole at the top of home, a token and its QR, and scrolls away
+  // with the page; on the other tabs the screen is all content. Out of sight the scene sleeps (as under a sheet).
+  const phoneMQ = matchMedia('(max-width: 860px)')
+  let phone = $state(phoneMQ.matches)
+  phoneMQ.addEventListener('change', e => (phone = e.matches))
+  const cardView = $derived(view === 'home' || view === 'token' || view === 'receive')
+  let away = $state(false)
+  function setAway(b: boolean) { if (b === away || !hero) return; away = b; if (!sheet) hero.rest(b) }
+  let colEl = $state<HTMLElement>(), scrolled = $state(false)
   function band() {
-    if (!hero || innerWidth >= 860) return
-    const top = document.querySelector('.top')?.getBoundingClientRect().bottom, col = document.querySelector('main.col')?.getBoundingClientRect().top
-    if (top && col) hero.setBand(top + 8, col - 8)
+    if (!hero || !phone || view === 'locked') return setAway(false) // the lock screen and the welcome keep their centred deck
+    const hole = colEl?.querySelector('.hole')?.getBoundingClientRect(), top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0
+    scrolled = (colEl?.scrollTop ?? 0) > 4
+    if (!hole || !cardView) return setAway(true)
+    setAway(hole.bottom < top + 24)
+    hero.setBand(hole.top + 8, hole.bottom - 8)
   }
-  $effect(() => { void view; void hero; requestAnimationFrame(band) })
+  $effect(() => { void view; void hero; void phone; requestAnimationFrame(band) })
   $effect(() => { addEventListener('resize', band); return () => removeEventListener('resize', band) })
 
   // ---------------------------------------------------------------- navigation
@@ -513,6 +546,11 @@
       .finally(() => (preparing = false))
   }
 
+  // the recipient from the clipboard: Android through the app (a WebView may not read it), elsewhere the page's own way
+  async function pasteTo() {
+    const app = (window as unknown as { __cwApp?: { paste?(): string } }).__cwApp
+    try { const v = (app?.paste ? app.paste() : await navigator.clipboard.readText()).trim(); if (v) to = v.slice(0, 200) } catch {}
+  }
   async function copy(text: string) {
     try { await navigator.clipboard.writeText(text) } catch {}
     copied = text
@@ -699,6 +737,16 @@
   const incoming = $derived(hist.map(x => ({ ...x, d: txs[`${myAddress}|${x.sig}`] }))
     .filter((x): x is Sig & { d: Tx } => !!x.d && x.d !== 'err' && x.ok && txKind(x.d) === 'in').slice(0, 3))
   const peerName = (a: string) => contactList.find(c => c.address === a)?.name ?? short(a)
+  let txOpen = $state('') // phone: the operation shown in the sheet below
+  $effect(() => { void view; void chainId; void accId; txOpen = '' })
+  // the list is cut into days; a row then says only the time
+  const dayOf = (s: number | null) => {
+    if (!s) return '—'
+    const d = new Date(s * 1000), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1)
+    return d.toDateString() === now.toDateString() ? t('hist.today') : d.toDateString() === y.toDateString() ? t('hist.yesterday')
+      : d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) })
+  }
+  const clock = (s: number | null) => (s ? new Date(s * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—')
   const when = (s: number | null) => (s ? new Date(s * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—')
 
   const visibleChains = $derived(chainList.filter(c => (showTest || !c.test || c.id === chainId) && (!c.more || pinned.includes(c.id) || c.id === chainId)))
@@ -708,6 +756,19 @@
   let lastShowTest = false
   $effect(() => { if (showTest !== lastShowTest) { lastShowTest = showTest; if (view !== 'locked') hero?.setDeck(netDeck(), chainId, 'glass', 'update') } })
 
+  // Android back (gesture or button): one step back, like any app — sheet, token list, menu, screen, home; from home or
+  // the lock screen the app goes to the background (not closed: the next open is instant)
+  function backPress() {
+    const toBackground = () => (window as unknown as { __cwApp?: { home(): void } }).__cwApp?.home()
+    resetIdle()
+    if (sheet) { if (sheetEl && !sheetEl.dismiss()) toBackground() }
+    else if (picker) picker = ''
+    else if (txOpen) txOpen = ''
+    else if (menu) menu = ''
+    else if (view === 'home' || view === 'locked') toBackground()
+    else if (view === 'token' || view === 'receive' || view === 'send' || view === 'swap') back()
+    else go('home')
+  }
   function keys(e: KeyboardEvent) {
     if (e.key === 'Escape' && picker) { picker = ''; return } // the token list closes, the swap stays
     resetIdle()
@@ -746,6 +807,7 @@
     invoke<{ on: boolean; waiting: Batch | null }>('agent_state').then(s => { agentOn = s.on; if (s.waiting) agentReq = s.waiting }, () => {})
     offs.push(listen<Batch>('agent-request', e => showBatch(e.payload)))
     if (!/Android/i.test(navigator.userAgent)) addonList().then(l => (addons = l), () => {}) // desktop only (addons.rs SUPPORTED)
+    else offs.push(onBackButtonPress(backPress).then(l => () => void l.unregister()))
     addEventListener('message', onBridge)
     offs.push(Promise.resolve(() => removeEventListener('message', onBridge)))
     addEventListener('pointerdown', resetIdle)
@@ -756,7 +818,7 @@
 <svelte:window onkeydown={keys} onpointerdown={outside} />
 
 <WindowBar />
-<canvas bind:this={canvas} class="stage" class:off={!hero} aria-hidden="true"></canvas>
+<canvas bind:this={canvas} class="stage" class:off={!hero} class:away aria-hidden="true"></canvas>
 
 {#snippet chainDot(c: Chain)}<span class="cdot" class:test={c.test} class:real={!c.test}></span>{/snippet}
 {#snippet tokIcon(c: Card)}<span class="ticon"><img src={iconURL(c)} alt="" /></span>{/snippet}
@@ -779,15 +841,16 @@
     <p class="gate-err" class:bad={!!gateErr} role="alert">{gateErr || t('lock.note')}</p>
   {/if}
 {:else}
-  <header class="top">
+  <header class="top" class:scrolled class:bare={view === 'send' || view === 'swap'}>
     <div class="pickers">
-      <div class="wrap">
+      <div class="wrap w-net">
         <button class="chip" class:real={!chain.test} onclick={() => { menu = menu === 'net' ? '' : 'net'; addingNet = false }} aria-expanded={menu === 'net'} aria-label={t('net.title')}>
           {@render chainDot(chain)}{chain.name}{#if chain.test}<em>{t('net.testTag')}</em>{/if}
           <Icon name="chevron" size={14} />
         </button>
         {#if menu === 'net'}
-          <div class="menu panel net-menu" role="dialog" aria-label={t('net.title')} in:pop out:pop={{ out: true }}>
+          <div class="menu panel net-menu" role="dialog" aria-label={t('net.title')} in:pop out:pop={{ out: true }} use:dragDown={() => (menu = '')}>
+            <span class="grab" aria-hidden="true"></span>
             {#if !addingNet}
               <p class="mh">{t('net.main')}</p>
               {#each visibleChains.filter(c => !c.test) as c (c.id)}
@@ -827,12 +890,13 @@
           </div>
         {/if}
       </div>
-      <div class="wrap">
+      <div class="wrap w-acc">
         <button class="chip" onclick={() => (menu = menu === 'acc' ? '' : 'acc')} aria-expanded={menu === 'acc'} aria-label={t('acc.title')}>
           <span>{acc?.name ?? '—'}</span><span class="mono faint">{short(myAddress)}</span><Icon name="chevron" size={14} />
         </button>
         {#if menu === 'acc'}
-          <div class="menu panel" role="menu" in:pop out:pop={{ out: true }}>
+          <div class="menu panel" role="menu" in:pop out:pop={{ out: true }} use:dragDown={() => (menu = '')}>
+            <span class="grab" aria-hidden="true"></span>
             <div class="mhead">
               <p class="mh">{t('acc.list')}</p>
               <button class="mplus" class:on={plus} onclick={() => (plus = !plus)} aria-expanded={plus} aria-label={t('acc.add')} title={t('acc.add')}><Icon name="plus" size={16} /></button>
@@ -871,13 +935,16 @@
     </nav>
 
     <div class="right">
-      <button class="btn icon" aria-label={t('nav.settings')} onclick={() => go('settings')}><Icon name="gear" /></button>
+      <button class="btn icon gear" aria-label={t('nav.settings')} onclick={() => go('settings')}><Icon name="gear" /></button>
       {#if !vaultOpen}<button class="btn icon" aria-label={t('lock.action')} onclick={lock}><Icon name="lock" /></button>{/if}
     </div>
   </header>
 
-  <main class="col" class:quiet class:settled class:frame={view === 'addon'}>
+  {#if (menu || txOpen) && phone}<div class="mveil" transition:fade={{ duration: still() ? 0 : 200 }} onclick={() => (txOpen = '')} role="presentation"></div>{/if}
+  <main class="col" class:quiet class:settled class:frame={view === 'addon'} class:full={view === 'send' || view === 'swap'} bind:this={colEl} onscroll={band} use:pullRefresh={pullFor(view)}>
+    <div class="pullmark" aria-hidden="true"><Icon name="flip" size={18} /></div>
     {#if view === 'home'}
+      <div class="hole" aria-hidden="true"></div>
       {#key chainId + acc?.id}
         <p class="muted cap"><span class="line"><span>{t('home.total', { acc: acc?.name ?? '', net: chain.name })}</span></span></p>
         <p class="bal display num"><span class="line"><span style="--d:60ms">{cur ? fmt(shown.current) : '—'}<small class="unit">{chain.symbol}</small></span></span></p>
@@ -921,6 +988,7 @@
       {#if cur?.partial}<p class="note">{t('watch.partial')}</p>{/if}
 
     {:else if view === 'token' && card}
+      <div class="hole s" aria-hidden="true"></div>
       <button class="back" onclick={back}><Icon name="back" />{t('act.allTokens')}</button>
       {#key card.id}
         <h2 class="display t"><span class="line"><span class="vt" style:view-transition-name={vtId === card.id ? 'sym' : null}>{card.sym}</span></span></h2>
@@ -936,6 +1004,7 @@
       {/key}
 
     {:else if view === 'receive'}
+      <div class="hole l" aria-hidden="true"></div>
       <button class="back" onclick={back}><Icon name="back" />{t('act.back')}</button>
       <h2 class="display t s"><span class="line"><span>{t('recv.title', { sym: chain.symbol })}</span></span></h2>
       <!-- the card's back carries the QR, the column the address (owner 09.10: nothing twice); without 3D both stay here -->
@@ -967,7 +1036,8 @@
       <form class="form" onsubmit={reviewSend} novalidate>
         <label class="appear" style="--d:80ms">
           <span class="label">{t('send.to')}</span>
-          <span class="field" class:bad={touched && toErr}><input bind:value={to} placeholder={t('send.toPh')} spellcheck="false" autocomplete="off" /></span>
+          <span class="field" class:bad={touched && toErr}><input bind:value={to} placeholder={t('send.toPh')} spellcheck="false" autocomplete="off" />
+            {#if !to}<button type="button" class="tag sq" onclick={pasteTo} aria-label={t('send.paste')} title={t('send.paste')}><Icon name="paste" size={16} /></button>{/if}</span>
           {#if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
         </label>
         <div class="chips appear" style="--d:120ms">
@@ -975,20 +1045,26 @@
             <button type="button" class="tag" class:cur={contactHit === c} onclick={() => (to = c.name)}>{c.name}</button>
           {/each}
         </div>
-        <label class="appear" style="--d:160ms">
+        <label class="appear amtl" style="--d:160ms">
           <span class="label">{t('send.amount')}</span>
           <span class="field" class:bad={touched && amtErr}>
-            <input bind:value={amount} inputmode="decimal" placeholder="0" class="mono" autocomplete="off" />
+            <input bind:value={amount} inputmode={phone ? 'none' : 'decimal'} readonly={phone} placeholder="0" class="mono" autocomplete="off" />
             <span class="faint">{card.sym}</span>
             {#if maxSend(card, chain.kind) === 'max' && card.amount > 0}<button type="button" class="tag" onclick={() => evmMax(myAddress, chain, valid(toAddr) ? toAddr : undefined).then(v => countInto(x => (amount = x), amount, v), e => flash(String(e)))}>{t('send.max')}</button>
             {:else if maxSend(card) && Number(maxSend(card)) > 0}<button type="button" class="tag" onclick={() => countInto(v => (amount = v), amount, maxSend(card)!)}>{t('send.max')}</button>{/if}
           </span>
           {#if touched && amtErr}<span class="err">{amtErr}</span>{:else}<span class="faint small">{t('send.available', { v: fmt(maxAmt, card.sym) })}{#if amt > 0 && valueOf({ ...card, amount: amt }) !== undefined} · ≈ {usd(valueOf({ ...card, amount: amt })!)}{/if}</span>{/if}
         </label>
+        {#if phone && card.raw && BigInt(card.raw) > 0n}<div class="chips parts">
+          {#each [1, 2] as q}<button type="button" class="tag" onclick={() => countInto(v => (amount = v), amount, exact(BigInt(card!.raw!) * BigInt(q) / 4n, card!.decimals ?? 0))}>{q === 1 ? t('send.quarter') : t('send.half')}</button>{/each}
+          {#if maxSend(card, chain.kind) === 'max' && card.amount > 0}<button type="button" class="tag" onclick={() => evmMax(myAddress, chain, valid(toAddr) ? toAddr : undefined).then(v => countInto(x => (amount = x), amount, v), e => flash(String(e)))}>{t('send.max')}</button>
+          {:else if maxSend(card) && Number(maxSend(card)) > 0}<button type="button" class="tag" onclick={() => countInto(v => (amount = v), amount, maxSend(card)!)}>{t('send.max')}</button>{/if}
+        </div>{/if}
         <dl class="sum appear" style="--d:200ms">
           <div><dt>{t('send.net')}</dt><dd class:emb={!chain.test}>{chain.name}{!chain.test ? ` · ${t('net.real')}` : ''}</dd></div>
         </dl>
         <button class="btn solid wide appear" style="--d:240ms" disabled={preparing || !!sheet}>{preparing ? t('send.preparing') : t('send.review')}</button>
+        {#if phone}<Keypad bind:value={amount} max={Math.min(card.decimals ?? 9, 9)} />{/if}
       </form>
 
     {:else if view === 'swap'}
@@ -996,12 +1072,12 @@
       <h2 class="display t s"><span class="line"><span>{t('swap.title')}</span></span></h2>
       {#if !canSwap}<p class="note">{t('swap.mainnetOnly')}</p>
       {:else}
-        <form class="form" onsubmit={reviewSwap} novalidate>
+        <form class="form swapf" onsubmit={reviewSwap} novalidate>
           <label>
             <span class="label">{t('swap.give')}</span>
             <span class="field">
               <button type="button" class="tokbtn" onclick={() => openPicker('in')} aria-haspopup="dialog">{@render swapIcon(swIn)}<b>{symOf(swIn)}</b><Icon name="chevron" size={14} /></button>
-              <input bind:value={swAmt} inputmode="decimal" placeholder="0" class="mono" autocomplete="off" />
+              <input bind:value={swAmt} inputmode={phone ? 'none' : 'decimal'} readonly={phone} placeholder="0" class="mono" autocomplete="off" />
               {#if swMax && Number(swMax) > 0}<button type="button" class="tag" onclick={() => countInto(v => (swAmt = v), swAmt, swMax!)}>{t('send.max')}</button>{/if}
             </span>
             <span class="faint small">{t('send.available', { v: fmt(swInCard?.amount ?? 0, symOf(swIn)) })}</span>
@@ -1022,6 +1098,7 @@
           </dl>
           {#if swErr}<span class="err">{netErr(swErr)}</span>{/if}
           <button class="btn solid wide" disabled={!swQuote || swBusy || !!sheet}>{swBusy ? t('send.preparing') : t('swap.review')}</button>
+          {#if phone}<Keypad bind:value={swAmt} max={Math.min(swInCard?.decimals ?? 9, 9)} />{/if}
         </form>
         {#if picker}
           <div class="picker panel" role="dialog" aria-label={t('swap.pick')} transition:pop>
@@ -1058,17 +1135,21 @@
         {#if chain.explorer && myAddress}<button class="btn small" onclick={() => openAddress(myAddress, chain).catch(e => flash(String(e)))}>{t('hist.explorer')}</button>{/if}
       {:else if histState}<p class="note">{netErr(histState)}</p>
       {:else if histStale}<p class="faint small">{t('hist.stale')}</p>{/if}
-      <ul class="tx">
+      <ul class="tx hist">
         {#each hist as x, i (x.sig)}
           {@const raw = txs[`${myAddress}|${x.sig}`]}
           {@const d = raw && raw !== 'err' ? raw : null}
           {@const kind = d ? txKind(d) : null}
-          <li class="appear" style="--d:{i * 30}ms">
+          {#if i === 0 || dayOf(hist[i - 1].time) !== dayOf(x.time)}<li class="day appear" style="--d:{i * 30}ms">{dayOf(x.time)}</li>{/if}
+          <!-- phone: the whole row opens the operation below; the desktop keeps its two buttons in the row -->
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (a button on the phone only: role and tabindex come together) -->
+          <li class="appear" style="--d:{i * 30}ms" class:tap={phone} role={phone ? 'button' : undefined} tabindex={phone ? 0 : undefined}
+            onclick={() => phone && (txOpen = x.sig)} onkeydown={e => phone && e.key === 'Enter' && (txOpen = x.sig)}>
             <span class="dir" class:in={kind === 'in'}><Icon name={!x.ok ? 'close' : kind === 'in' ? 'receive' : kind === 'out' ? 'send' : kind === 'swap' ? 'swap' : 'check'} size={16} /></span>
             <span>
               <span class="what">{#if d && kind}{t(`hist.${kind}`)}{#if d.moves.length}<b class="mono">{d.moves.map(moveText).join('  ')}</b>{/if}{:else}<span class="mono">{short(x.sig)}</span>{/if}</span>
               <small class="faint">
-                {#if d?.peer}{t(kind === 'in' ? 'hist.from' : 'hist.to', { a: peerName(d.peer) })}{' · '}{/if}{when(x.time)}{#if d?.fee}{' · '}{t('hist.fee', { v: chain.kind === 'evm' ? fmt(Number(d.fee) / 1e18, chain.symbol) : solText(d.fee) })}{/if}{#if !x.ok}{' · '}{t('hist.failed')}{:else if raw === 'err'}{' · '}{t('hist.detailFail')}{/if}
+                {#if d?.peer}{t(kind === 'in' ? 'hist.from' : 'hist.to', { a: peerName(d.peer) })}{' · '}{/if}{clock(x.time)}{#if d?.fee && !phone}{' · '}{t('hist.fee', { v: chain.kind === 'evm' ? fmt(Number(d.fee) / 1e18, chain.symbol) : solText(d.fee) })}{/if}{#if !x.ok}{' · '}{t('hist.failed')}{:else if raw === 'err'}{' · '}{t('hist.detailFail')}{/if}
               </small>
             </span>
             <span class="row">
@@ -1205,6 +1286,34 @@
       </div>
     {/if}
   </main>
+  {#if txOpen && phone}
+    {@const x = hist.find(h => h.sig === txOpen)}
+    {@const raw = txs[`${myAddress}|${txOpen}`]}
+    {@const d = raw && raw !== 'err' ? raw : null}
+    {@const kind = d ? txKind(d) : null}
+    <div class="menu panel txd" role="dialog" aria-label={t('hist.title')} in:pop out:pop={{ out: true }} use:dragDown={() => (txOpen = '')}>
+      <span class="grab" aria-hidden="true"></span>
+      <p class="mh">{d && kind ? t(`hist.${kind}`) : t('hist.title')}{x && !x.ok ? ` · ${t('hist.failed')}` : ''}</p>
+      {#if d?.moves.length}<p class="txamt mono">{d.moves.map(moveText).join('  ')}</p>{/if}
+      <dl class="sum">
+        {#if d?.peer}<div><dt>{kind === 'in' ? t('hist.fromL') : t('hist.toL')}</dt><dd class="mono addr2">{peerName(d.peer) !== short(d.peer) ? `${peerName(d.peer)} · ` : ''}{d.peer}</dd></div>{/if}
+        {#if x}<div><dt>{t('hist.when')}</dt><dd>{when(x.time)}</dd></div>{/if}
+        {#if d?.fee}<div><dt>{t('hist.feeL')}</dt><dd class="mono">{chain.kind === 'evm' ? fmt(Number(d.fee) / 1e18, chain.symbol) : solText(d.fee)}</dd></div>{/if}
+        <div><dt>{t('send.net')}</dt><dd>{chain.name}</dd></div>
+      </dl>
+      <div class="two">
+        <button class="btn small" onclick={() => copy(txOpen)}>{copied === txOpen ? t('act.copied') : t('hist.copySig')}</button>
+        {#if cluster(chain) !== 'local'}<button class="btn small solid" onclick={() => openTx(txOpen, chain).catch(e => flash(String(e)))}>{t('hist.openShort')}</button>{/if}
+      </div>
+    </div>
+  {/if}
+  {#if view !== 'send' && view !== 'swap'}
+    <nav class="tabbar" aria-label={t('nav.sections')}>
+      {#each TABS as n (n.id)}
+        <button class:cur={tabOf(view) === n.id} aria-current={tabOf(view) === n.id ? 'page' : undefined} onclick={() => tab(n.id)}><span class="ti"><Icon name={n.icon} size={22} /></span>{n.label()}</button>
+      {/each}
+    </nav>
+  {/if}
 {/if}
 
 {#if introOn}<Intro ready={readyP} kind={kindP} scene={() => hero} ontraced={() => tracedRes()} onopen={introOpen} ondone={() => (introOn = false)} />{/if}
@@ -1225,6 +1334,8 @@
 <style>
   .stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: pan-y; }
   .stage.off { display: none; }
+  .stage.away { opacity: 0; } /* phone: the scene sleeps out of sight; its last frame must not stay behind the content */
+  .stage { transition: opacity 220ms ease; }
   /* cards stand all around us; the wallet column floats over them on a soft dark veil */
 
   /* content column: the wallet itself, left edge leads */
@@ -1411,9 +1522,11 @@
   .tx .what b { font-weight: 400; color: var(--ink); white-space: pre; }
   .tx .inb { font-weight: 400; color: var(--ink); white-space: pre; font-size: 14px; }
   .dir.in { color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink-3, var(--line)); }
+  .tx li.day { display: block; padding: 18px 0 6px; margin: 0; font-size: 13px; color: var(--ink-3); background: none; }
+  .tx li.day:first-child { padding-top: 6px; }
 
-  .form { display: grid; gap: 16px; }
-  .form label { display: grid; gap: 8px; }
+  .form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .form label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a field never outgrows a phone (inputs have a min width of their own) */
   .err { font-size: 13px; color: var(--ember); }
   .ok { font-size: 12px; color: var(--ink-3); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1475,18 +1588,103 @@
   .toast.ok :global(svg) { color: #c9f2a0; }
   @keyframes tst { from { opacity: 0; transform: translateY(-6px); } }
 
+  /* phone-only parts stay out of the desktop */
+  .tabbar, .hole, .pullmark, .mveil, .grab { display: none; }
+
+  /* phone (owner 10.10: the controls people know from phone wallets): one header row, the page scrolls as one with the
+     card in a hole at its top, menus are sheets from the bottom, sections in a tab bar under the thumb */
   @media (max-width: 860px) {
-    .top { grid-template-columns: 1fr auto; padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 14px; } /* phone: below the status bar */
-    .top nav { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
-    .seg button { padding: 0 12px; font-size: 13px; }
+    .top { display: flex; align-items: center; gap: 8px; padding: calc(10px + var(--top-inset)) 16px 10px; transition: background-color 240ms ease, box-shadow 240ms ease; }
+    .top.scrolled { background: rgb(9 9 12 / .96); box-shadow: 0 1px 0 var(--line); } /* no backdrop-filter: it would pin the fixed menu sheet inside the header */
+    .top:has(.menu) { z-index: 25; } /* an open sheet rides over the veil and the tab bar */
+    .pickers { display: contents; }
+    .w-acc { order: 0; margin-right: auto; min-width: 0; }
+    .w-net { order: 1; }
+    .right { order: 2; margin: 0; }
+    .top nav.seg, .right :global(.gear) { display: none; }
+    .chip { padding: 0 12px; }
     .chip .mono { display: none; }
-    .menu { position: fixed; left: 16px; right: 16px; top: calc(66px + env(safe-area-inset-top, 0px)); min-width: 0; max-height: calc(100vh - 82px - env(safe-area-inset-top, 0px)); overflow-y: auto; } /* narrow window: the menu never runs off the edge */
-    .col { left: 16px; right: 16px; width: auto; top: 53vh; padding-bottom: calc(48px + env(safe-area-inset-bottom, 0px)); } /* below the card, never over it */
-    .lockf { top: auto; }
+    .w-acc .chip > span:first-child { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .seg button { padding: 0 12px; font-size: 13px; }
+
+    .mveil { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(7 7 10 / .62); }
+    .menu, .net-menu {
+      position: fixed; left: 0; right: 0; top: auto; bottom: 0; min-width: 0; max-height: 82vh; overflow-y: auto; overscroll-behavior: contain;
+      padding: 6px 12px calc(12px + var(--bottom-inset)); border-radius: 22px 22px 0 0;
+    }
+    .grab { display: block; width: 36px; height: 4px; margin: 4px auto 10px; border-radius: 2px; background: rgb(238 235 229 / .28); }
+    .mi { min-height: 52px; }
+
+    .col { left: 0; right: 0; top: 0; bottom: 0; width: auto; padding: calc(64px + var(--top-inset)) 16px calc(92px + var(--bottom-inset)); scrollbar-width: none; overscroll-behavior-y: contain; }
+    .col.full { padding-bottom: calc(16px + var(--bottom-inset)); }
+    .lockf { top: auto; bottom: clamp(56px, 12vh, 120px); padding: 0 16px; }
+    .hole { display: block; height: clamp(200px, 40vh, 360px); }
+    .hole.s { height: clamp(170px, 30vh, 280px); }
+    .hole.l { height: clamp(260px, 50vh, 440px); }
+
+    .tabbar {
+      display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 12;
+      padding: 6px 4px calc(6px + var(--bottom-inset)); background: rgb(11 11 14 / .94); box-shadow: 0 -1px 0 var(--line); backdrop-filter: blur(16px);
+    }
+    .tabbar button { display: grid; justify-items: center; align-content: center; gap: 4px; min-height: 56px; padding: 0; border: 0; background: none; color: var(--ink-3); font-size: 12px; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: color 200ms ease; }
+    .tabbar .ti { display: grid; place-items: center; width: 56px; height: 30px; border-radius: 999px; transition: background-color 260ms var(--ease); }
+    .tabbar button.cur { color: var(--ink); }
+    .tabbar button.cur .ti { background: rgb(238 235 229 / .12); }
+    .tabbar button:active .ti { background: rgb(238 235 229 / .18); }
+
     .bal { font-size: 48px; }
-    .acts :global(.btn) { padding: 0 16px; min-height: 44px; }
-    .acts.money { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; } /* send / receive / swap on one row (critique 09.10) */
-    .acts.money :global(.btn) { padding: 0 8px; justify-content: center; gap: 6px; }
-    .col { scrollbar-width: none; }
+    .acts :global(.btn) { min-height: 44px; }
+    /* send / receive / swap: round keys with the word under them */
+    .acts.money { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+    .acts.money :global(.btn) { flex-direction: column; gap: 8px; min-height: 0; padding: 0; background: none; box-shadow: none; color: var(--ink); font-size: 13px; overflow: visible; }
+    .acts.money :global(.btn svg) { width: 54px; height: 54px; padding: 17px; border-radius: 50%; background: var(--metal); box-shadow: var(--metal-edge); transition: transform 160ms var(--ease); }
+    .acts.money :global(.btn.solid svg) { background: var(--ink); color: var(--stage); }
+    .acts.money :global(.btn::before) { display: none; }
+    .acts.money :global(.btn:active) { transform: none; }
+    .acts.money :global(.btn:active svg) { transform: scale(.94); }
+
+    /* pull to refresh: the mark comes down under the header and turns, then spins while the network answers */
+    .pullmark {
+      display: grid; place-items: center; position: fixed; left: 50%; top: calc(52px + var(--top-inset)); z-index: 11; width: 36px; height: 36px; margin-left: -18px;
+      border-radius: 50%; background: var(--metal); box-shadow: var(--metal-edge), 0 6px 18px rgb(0 0 0 / .5); color: var(--ink); pointer-events: none;
+      opacity: var(--pull, 0); transform: translateY(var(--pull-y, 0px)) rotate(calc(var(--pull, 0) * 270deg));
+    }
+    .col:global(.refreshing) .pullmark :global(svg) { animation: rf 900ms linear infinite; }
+
+    .toast { top: calc(68px + var(--top-inset)); max-width: calc(100vw - 32px); }
+
+    /* send and swap take the whole screen: the amount big in the middle, the button and the keypad under the thumb */
+    .col.full { display: flex; flex-direction: column; padding-top: calc(8px + var(--top-inset)); }
+    .top.bare { display: none; } /* a send is one task: its own screen, the network named in the form */
+    .col.full .form { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+    .col.full .t.s { font-size: 30px; margin: 4px 0 12px; }
+    .col.full .wide { margin-top: auto; }
+    .amtl { justify-items: center; text-align: center; }
+    .amtl .label { justify-self: start; }
+    .amtl .field { justify-content: center; min-height: 64px; padding: 0; box-shadow: none; gap: 10px; }
+    .amtl .field input { flex: none; field-sizing: content; min-width: 1ch; max-width: 70vw; font: 300 44px/1.1 var(--font); letter-spacing: -.02em; text-align: center; }
+    .amtl .field > .faint { font-size: 20px; }
+    .amtl .field > :global(.tag) { display: none; }
+    .parts { justify-content: center; }
+    .parts .tag { min-height: 36px; padding: 0 16px; }
+
+    /* swap: two stacked cards, the turn-over key on their seam, amounts big and to the right */
+    .swapf .field { min-height: 76px; padding: 0 16px 0 10px; border-radius: 20px; background: rgb(238 235 229 / .035); }
+    .swapf .field input, .swapf .getv { flex: 1; min-width: 0; text-align: end; font: 300 30px/1.1 var(--font); letter-spacing: -.02em; }
+    .swapf .swdir { position: relative; height: 0; margin: 0; z-index: 1; }
+    .swapf .swdir .label { position: absolute; left: 0; top: 4px; }
+    .swapf .swdir :global(.btn.icon) { position: absolute; left: 50%; top: -14px; translate: -50% 0; width: 44px; min-height: 44px; background: var(--metal); box-shadow: var(--metal-edge), 0 0 0 4px var(--stage); }
+    .swapf > .field.get { margin-top: 26px; }
+
+    /* history: a row is one tap target; its details open in a sheet */
+    .hist .row { display: none; }
+    .hist li { grid-template-columns: 36px 1fr; }
+    .hist li.tap { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .hist li.tap:active { background: rgb(238 235 229 / .06); }
+    .txd { z-index: 26; display: grid; gap: 14px; padding-left: 20px; padding-right: 20px; }
+    .txd .mh { margin: 0; }
+    .txamt { margin: 0; font-size: 26px; line-height: 1.25; overflow-wrap: anywhere; }
+    .txd .sum div { align-items: baseline; }
+    .addr2 { font-size: 13px; word-break: break-all; text-align: end; }
   }
 </style>

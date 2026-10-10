@@ -26,6 +26,7 @@
   import gsap from 'gsap'
   import { invoke } from '@tauri-apps/api/core'
   import Icon from './Icon.svelte'
+  import { haptic } from '../lib/actions'
 
   let { mode: modeIn, wallet = '', account = '', fresh: freshIn = false, open: openIn = false, origin = null, round, draft = null, batch = null, offer = null, onclose }: {
     mode: SheetMode; wallet?: string; account?: string; fresh?: boolean; open?: boolean; origin?: DOMRect | null; round?: number; draft?: Draft | null; batch?: Batch | null; offer?: Offer | null
@@ -54,7 +55,9 @@
   // the plate and the content window grow together, so nothing shows past the plate's edge mid-unfold (owner 09.10)
   let vh = $state(innerHeight)
   // the top edge sits near the centre and rises (with the growth) only as far as a tall step needs to fit the window
-  const top = $derived(Math.max(24, Math.round((vh - h) / 2))) // centred (owner 10.10: it sat low); a tall step starts near the top
+  // phone: a sheet from the bottom edge, like every phone app; it rises with the keyboard (MainActivity lifts the page)
+  const phone = matchMedia('(max-width: 860px)').matches
+  const top = $derived(Math.max(24, Math.round(phone ? vh - h : (vh - h) / 2))) // desktop centred (owner 10.10: it sat low); a tall step starts near the top
   const tall = $derived(h > vh - 24 - top)
 
   // form state lives only here and is wiped on close
@@ -77,12 +80,13 @@
     const iy = Math.max(0, (s.height - o.height) / 2), ix = Math.max(0, (s.width - o.width) / 2)
     return { transform: `translate(${dx}px, ${dy}px)`, clipPath: `inset(${iy}px ${ix}px round ${round ?? Math.min(o.height, o.width) / 2}px)` }
   }
-  const whole: Keyframe = { transform: 'translate(0, 0)', clipPath: 'inset(0px 0px round 20px)' }
+  const whole: Keyframe = { transform: 'translate(0, 0)', clipPath: phone ? 'inset(0px 0px round 22px 22px 0px 0px)' : 'inset(0px 0px round 20px)' }
   const anim = (k: Keyframe[], ms: number, easing: string) => el.animate(k, { duration: still ? 0 : ms, easing, fill: 'forwards' }).finished
 
   let closing = false
   // the wallet locked (auto-lock too): the sheet goes at once, busy or not, secrets wiped
   export function shut() { close(false, true) }
+  export function dismiss() { if (welcome && step === 'start') return false; close(false); return true } // Android back = Escape; false: nothing behind the welcome
   async function close(done: boolean, force = false) {
     if (closing || (busy && !done && !force)) return
     if (welcome && !done && !force) { // back to the welcome, secrets wiped: nothing lies behind this sheet to close to
@@ -250,9 +254,9 @@
   function press() {
     const conf = draft ?? batch
     if (busy || closing || !ready || !conf) return
-    if (!conf.open && !p1) { err = 'Введите пароль'; return }
+    if (!conf.open && !p1) { err = 'Введите пароль'; haptic('err'); return }
     holdTween?.kill()
-    holdTween = gsap.to({ v: hold }, { v: 1, duration: still ? 0.3 : 1.2 * (1 - hold), ease: 'none', onUpdate() { hold = this.targets()[0].v }, onComplete: confirmSend })
+    holdTween = gsap.to({ v: hold }, { v: 1, duration: still ? 0.3 : 1.2 * (1 - hold), ease: 'none', onUpdate() { hold = this.targets()[0].v }, onComplete: () => { haptic('ok'); confirmSend() } }) // the phone answers the full hold
   }
   function release() { if (busy || hold >= 1) return; holdTween?.kill(); holdTween = gsap.to({ v: hold }, { v: 0, duration: 0.32, ease: 'power2.out', onUpdate() { hold = this.targets()[0].v } }) }
   async function confirmSend() {
@@ -280,7 +284,7 @@
 
 <svelte:window bind:innerHeight={vh} />
 <div class="veil" class:soft={welcome} aria-hidden="true"></div>
-<div class="sheet" class:busy bind:this={el} style:--top="{top}px" role="dialog" aria-modal="true" aria-label={titles[step]} style:--h="{h}px">
+<div class="sheet" class:busy class:phone bind:this={el} style:--top="{top}px" role="dialog" aria-modal="true" aria-label={titles[step]} style:--h="{h}px">
   <div class="plate" aria-hidden="true"></div>
   <div class="body" class:scroll={tall}>
   <div class="inner" bind:this={inner}>
@@ -586,6 +590,13 @@
   .hold { position: relative; overflow: hidden; touch-action: none; }
   .hold::before { content: ''; position: absolute; inset: 0; z-index: 0; opacity: 1; background: var(--ember); transform-origin: 0 50%; transform: scaleX(var(--hold, 0)); transition: none; } /* replaces the hover light */
   .hold span { position: relative; }
+
+  /* phone: full width from the bottom edge, square at the bottom, clear of the gesture bar */
+  .sheet.phone { left: 0; width: 100vw; translate: none; --max: calc(100vh - var(--top)); }
+  .phone .plate { border-radius: 22px 22px 0 0; }
+  .phone .body { clip-path: inset(0 0 calc(100% - min(var(--h), var(--max))) 0 round 22px 22px 0 0); }
+  .phone section { padding: 20px 20px calc(16px + var(--bottom-inset)); }
+  .phone .sum div { grid-template-columns: 112px 1fr; }
 
   @media (prefers-reduced-motion: reduce) {
     .plate, .body, .sheet { transition: none; }

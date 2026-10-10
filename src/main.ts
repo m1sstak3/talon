@@ -11,6 +11,12 @@ addEventListener('pointermove', e => {
   b.style.setProperty('--mx', `${e.clientX - r.left}px`); b.style.setProperty('--my', `${e.clientY - r.top}px`)
 }, { passive: true })
 
+// Android: the system bars' size from the app (MainActivity), as --sa-t/b/l/r; elsewhere CSS falls back to env()
+const app = (window as unknown as { __cwApp?: { insets(): string } }).__cwApp
+const putInsets = (i: Record<string, number>) => { for (const k in i) document.documentElement.style.setProperty(`--sa-${k}`, `${i[k]}px`) }
+;(window as unknown as { __cwInsets: typeof putInsets }).__cwInsets = putInsets
+if (app) try { putInsets(JSON.parse(app.insets())) } catch {}
+
 // dev only: ?slow=0.1 plays every GSAP timeline at that speed, to read motion frame by frame
 if (import.meta.env.DEV) { const k = Number(new URLSearchParams(location.search).get('slow') ?? import.meta.env.VITE_SLOW); if (k > 0) gsap.globalTimeline.timeScale(k) }
 

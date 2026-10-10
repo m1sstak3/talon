@@ -21,6 +21,10 @@
   --r-panel: 16px;
   --r-card: 20px;
 
+  /* phone bars: the app's own numbers on Android (main.ts), env() elsewhere */
+  --top-inset: var(--sa-t, env(safe-area-inset-top, 0px));
+  --bottom-inset: var(--sa-b, env(safe-area-inset-bottom, 0px));
+
   --ease: cubic-bezier(.32, .9, .18, 1);
   --ease-out: cubic-bezier(.23, 1, .32, 1);
 
