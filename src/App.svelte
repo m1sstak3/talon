@@ -95,7 +95,9 @@
   const myAddress = $derived(addressFor(acc, chain))
 
   // ---------------------------------------------------------------- balances: per account and network, cached
-  let holdings = $state<Record<string, Holdings>>({})
+  // last-known balances stay on the device (public chain data, like the history cache) and show dimmed until read again
+  let holdings = $state<Record<string, Holdings>>((() => { try { return JSON.parse(localStorage.getItem('holdings') ?? '{}') } catch { return {} } })())
+  let fresh = $state<Record<string, true>>({}) // read in this session
   let loadState = $state<Record<string, string>>({}) // '' ok | 'loading' | error text
   const hk = (a: Account | undefined, c: Chain) => `${a?.id}|${c.id}`
   const cur = $derived(holdings[hk(acc, chain)])
@@ -145,11 +147,12 @@
   async function load(a: Account | undefined, c: Chain, force = false) {
     const address = addressFor(a, c), key = hk(a, c)
     if (!a || !address || !coreAvailable()) return
-    if (!force && (holdings[key] || loadState[key] === 'loading')) return
+    if (!force && ((holdings[key] && fresh[key]) || loadState[key] === 'loading')) return
     loadState[key] = 'loading'
     try {
       holdings[key] = await readHoldings(address, c)
-      loadState[key] = ''
+      loadState[key] = ''; fresh[key] = true
+      try { localStorage.setItem('holdings', JSON.stringify($state.snapshot(holdings))) } catch {}
       hero?.sync(netDeck())
     } catch (e) { loadState[key] = String(e) }
   }
@@ -260,6 +263,7 @@
     run(async () => {
       if (gateEl) { gateShut = true; await new Promise(r => setTimeout(r, still() ? 0 : 440)) } // fold first, then deal
       view = 'home'; gateShut = false; resetIdle(); load(acc, chain)
+      for (const c of chainList.filter(c => c !== chain && !c.test && hasMoney(c)).slice(0, 6)) load(acc, c) // where money was last seen
       hero?.sync(netDeck()) // proven faces now; the core paints the docked one before the deal, the rest when calm
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))) // the column's first layout lands before the deal
       await hero?.unlock()
@@ -805,8 +809,8 @@
   // ---------------------------------------------------------------- the network menu: search, ★, what each network holds
   // Russian and short names people type («эфир», «бинанс»); the coin and the Chain ID are searched too
   const NET_AKA: Record<string, string> = {
-    solana: 'солана', ethereum: 'эфир эфириум', base: 'бейс база coinbase', arbitrum: 'арбитрум arb', optimism: 'оптимизм op',
-    polygon: 'полигон матик matic', bnb: 'бинанс бнб bsc binance', avalanche: 'аваланч лавина', robinhood: 'робинхуд',
+    solana: 'солана spl', ethereum: 'эфир эфириум erc20', base: 'бейс база coinbase', arbitrum: 'арбитрум arb', optimism: 'оптимизм op',
+    polygon: 'полигон матик matic', bnb: 'бинанс бнб bsc binance bep20', avalanche: 'аваланч лавина', robinhood: 'робинхуд',
     linea: 'линея', unichain: 'юничейн uniswap', sonic: 'соник fantom', gnosis: 'гносис', scroll: 'скролл', ink: 'инк kraken',
     worldchain: 'ворлд world', berachain: 'берачейн', monad: 'монад', hyperevm: 'хайпер hyperliquid',
   }
@@ -927,7 +931,7 @@
   <div class="mrow">
     <button class="mi" class:cur={c.id === chainId} onclick={() => setChain(c.id)}>
       {@render chainDot(c)}<span class="nn">{c.name}{#if c.test}<em>{t('net.testTag')}</em>{/if}</span>
-      <span class="nv" class:faint={w === '0' || (!!st && st !== 'loading')}>{st === 'loading' ? '…' : st ? t('net.noAnswer') : w}</span>
+      <span class="nv" class:faint={w === '0' || (!!st && st !== 'loading') || !fresh[hk(acc, c)]}>{st === 'loading' ? '…' : st ? t('net.noAnswer') : w}</span>
     </button>
     {#if !c.test}<button class="star" class:on={fav.includes(c.id)} onclick={() => toggleFav(c.id)} aria-pressed={fav.includes(c.id)} aria-label={t(fav.includes(c.id) ? 'net.unstar' : 'net.star', { net: c.name })} title={t(fav.includes(c.id) ? 'net.unstar' : 'net.star', { net: c.name })}><Icon name="star" size={16} /></button>{/if}
   </div>

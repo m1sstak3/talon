@@ -89,7 +89,15 @@ export function fmt(n: number, sym?: string): string {
   return sym ? `${s} ${sym}` : s
 }
 export const usd = (n: number) => '$' + n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: n > 0 && n < 0.01 ? 6 : 2 })
-export const isAddress = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.trim())
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+// a Solana address is base58 of exactly 32 bytes: a Tron «T…» or Bitcoin «1…/3…» address (25 bytes) looks alike and must not pass
+export function isAddress(s: string) {
+  const t = s.trim()
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(t)) return false
+  let n = 0n
+  for (const ch of t) n = n * 58n + BigInt(B58.indexOf(ch))
+  return t.match(/^1*/)![0].length + (n ? (n.toString(16).length + 1) >> 1 : 0) === 32 // leading «1» = zero bytes
+}
 export const isEvmAddress = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim())
 // ponytail: Number() of base units is exact up to 2^53; enough for display, the send path keeps integers
 const units = (amount: string, decimals: number) => Number(amount) / 10 ** decimals
