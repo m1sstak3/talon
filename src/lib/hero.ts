@@ -386,14 +386,14 @@ function scatterPose(i: number, t: number) {
   // pushed back and opened out: far, small, many (owner 07.10: «далеко, без резкости»)
   return { x: p[0] * 1.7 + Math.sin(t * w + ph) * 0.12, y: p[1] * 1.45 + Math.sin(t * w * 0.8 + ph * 1.3) * 0.09, z: p[2] * 1.55, ry: p[3] + Math.sin(t * w + ph) * 0.05, rz: p[4] }
 }
-function deckPose(i: number, t: number, loose: number) {
+function deckPose(i: number, t: number, loose: number, gap = 0) {
   // a stack that breathes as one piece. Cards are spaced deeper than their thickness and fan only in their own
   // plane (rz), so they can never cut through each other; `loose` (0..1) opens the fan as the password is typed
   const o = i - 1.5
   return {
     x: o * 0.07 * loose,
     y: -0.08 + Math.sin(t * 0.2618) * 0.025, // one loop, 24 s period
-    z: DECK_Z - i * 0.13,
+    z: DECK_Z - i * (0.13 + 0.55 * gap), // gap: the stack breathes out in depth before a deal and in after a gather
     ry: 0.12 + Math.sin(t * 0.2618 + 1.3) * 0.0175,
     rz: -0.02 + o * (0.012 + 0.05 * loose),
   }
@@ -485,6 +485,9 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
   const ringPos = { v: 0 } // index of the card in front (float while turning)
   const dock = { v: 0 } // 0 = cards on the ring, 1 = current card docked in front
   const loose = { v: 0 } // deck loosening while the password is typed
+  // the stack opens in depth for a deal (and stays open until a gather has landed): a card leaving the middle of a
+  // tight stack swung through its neighbours (owner 10.10 on the phone; checked by numbers with window.__cards)
+  const gap = { v: 0 }
   const scatter = { v: 0 } // 1 = welcome: cards scattered in the distance
   const shift = { v: 0 } // 0 = scene centred (intro, welcome, lock), 1 = home: docked card at 72%, wallet column left
   // intro: the CSS coin hands over to the lead card edge-on; `a` is its spin (rad), driven by the intro's timeline
@@ -600,7 +603,9 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
     dealing = false // a lock mid-deal: the faces may paint again once the deck rests
     return new Promise(res => {
       gsap.to(dock, { v: 0, duration: T(0.5), ease: 'power2.inOut' })
-      gsap.to(slots.map(s => s.spread), { v: 0, duration: T(0.7), ease: 'power2.inOut', stagger: 0.03, delay: T(0.2), onComplete: () => res() })
+      gap.v = 1 // the cards land in an open stack, which then closes (parallel moves: nothing crosses)
+      gsap.to(slots.map(s => s.spread), { v: 0, duration: T(0.7), ease: 'power2.inOut', stagger: 0.03, delay: T(0.2),
+        onComplete: () => { gsap.to(gap, { v: 0, duration: T(0.35), ease: 'power2.inOut', onComplete: () => res() }) } })
     })
   }
   // unlock: the deck flies out around us, slowly; then the current card glides in
@@ -609,9 +614,10 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
     dealing = true
     gsap.to(loose, { v: 0, duration: T(0.6) })
     const order = [...slots].sort((a, b) => Math.abs(offset(slots.indexOf(b))) - Math.abs(offset(slots.indexOf(a)))) // far ones leave first
+    gsap.to(gap, { v: 1, duration: T(0.3), ease: 'power2.out' }) // a breath out, then the deal
     return new Promise(res => {
       gsap.to(order.map(s => s.spread), {
-        v: 1, duration: T(slow ? 1.5 : 0.8), ease: 'power2.inOut', stagger: T(slow ? 0.07 : 0.03),
+        v: 1, duration: T(slow ? 1.5 : 0.8), ease: 'power2.inOut', stagger: T(slow ? 0.07 : 0.03), delay: T(0.22),
         onComplete: () => { gsap.to(dock, { v: 1, duration: T(slow ? 1.1 : 0.6), ease: 'glass', onComplete: () => { dealing = false; res() } }) },
       })
     })
@@ -722,6 +728,8 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
     if (import.meta.env.DEV) console.warn(`[pace] ${Math.round(1 / tick)} Hz display: dpr ${DPR}, glow ${bloom.enabled}`)
   }
   // dev: window.__pace(1 / 240) pretends a 240 Hz display, to watch the steps on a fast machine
+  // dev: window.__cards(true) — every shown card's world matrix, to check by numbers that no card cuts through another
+  if (import.meta.env.DEV) (window as any).__cards = (info = false) => slots.filter(s => s.slot.visible).map(s => (s.body.updateWorldMatrix(true, false), info ? { m: Array.from(s.body.matrixWorld.elements), i: slots.indexOf(s), d: +offset(slots.indexOf(s)).toFixed(2), k: +s.spread.v.toFixed(3) } : Array.from(s.body.matrixWorld.elements)))
   if (import.meta.env.DEV) (window as any).__pace = (k?: number) => (k && (tick = k), { tick, slow, behind, DPR, sharpOn, birth: birth.on, w: innerWidth, bloom: bloom.enabled })
   function frame() {
     timer.update()
@@ -749,7 +757,7 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
     slots.forEach((s, i) => {
       const d = offset(i), p = ringPose(d, dock.v), k = s.spread.v
       const rank = (i - ci + n) % n // the current network's card lies on top of the deck
-      const q = deckPose(rank, still ? 0 : t, loose.v), w = scatter.v
+      const q = deckPose(rank, still ? 0 : t, loose.v, gap.v), w = scatter.v
       if (w > 0) { const c = scatterPose(i, still ? 0 : t); q.x += (c.x - q.x) * w; q.y += (c.y - q.y) * w; q.z += (c.z - q.z) * w; q.ry += (c.ry - q.ry) * w; q.rz += (c.rz - q.rz) * w }
       s.slot.visible = p.show || k < 0.98
       // fly along the circle, not across the screen: angle and radius are blended in polar space
