@@ -528,7 +528,7 @@
   /* the plate changes height on its own; content swaps on top of it (opaque metal: no live blur over the canvas) */
   .plate {
     position: absolute; left: 0; right: 0; top: 0; height: min(var(--h), var(--max)); contain: strict;
-    border-radius: 20px; background: var(--metal); box-shadow: var(--metal-edge), 0 40px 90px -30px rgb(0 0 0 / .85);
+    border-radius: 20px; background: var(--metal); box-shadow: var(--metal-edge), 0 0 0 1px var(--line), var(--lift);
     transition: height 420ms var(--ease);
   }
   /* waiting for the core (Argon2, network): ember light runs along the bottom edge, like the unlock capsule */
@@ -555,12 +555,12 @@
   .area { padding: 12px 18px; align-items: start; }
   textarea { flex: 1; min-width: 0; background: none; border: 0; outline: none; resize: none; font-size: 14px; line-height: 1.55; color: var(--ink); }
   .field.ok { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .7); }
-  .amount.get { font-size: .72em; opacity: .9; } /* what arrives is a consequence of what leaves: one size down (critique 10.10) */
+  .amount.get { font-size: 32px; opacity: .9; } /* what arrives is a consequence of what leaves: one size down (critique 10.10) */
   .hint { margin: 0; font-size: 14px; line-height: 1.5; color: var(--ink-2); text-wrap: pretty; }
   .picks { display: grid; gap: 4px; }
   .pick { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; padding: 8px 10px; border-radius: 12px; cursor: pointer; transition: background-color 120ms ease; }
   .pick:hover, .pick:has(input:checked) { background: rgb(238 235 229 / .07); }
-  .pick small { grid-column: 2; font-size: 11px; overflow-wrap: anywhere; }
+  .pick small { grid-column: 2; font-size: 12px; overflow-wrap: anywhere; }
   .warn { color: var(--ember); }
   .acts { display: flex; gap: 10px; margin-top: 4px; }
   .acts .go { flex: 1; justify-content: center; }
@@ -571,7 +571,7 @@
   .toggle input { accent-color: var(--ember); width: 16px; height: 16px; }
   .grid3 { display: grid; gap: 12px; }
   .key { display: grid; gap: 6px; }
-  .keyv { padding: 10px 12px; border-radius: 12px; background: rgb(7 7 10 / .55); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; line-height: 1.5; word-break: break-all; user-select: all; }
+  .keyv { padding: 10px 12px; border-radius: 12px; background: rgb(7 7 10 / .55); box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; line-height: 20px; word-break: break-all; user-select: all; }
 
   /* the 12 words are dealt like cards into a 3x4 grid */
   .words { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -584,13 +584,13 @@
   .words .n { font-size: 12px; color: var(--ink-2); min-width: 14px; font-variant-numeric: tabular-nums; }
   @keyframes deal { from { opacity: 0; transform: translateY(12px) rotate(-6deg); } }
 
-  .amount { margin: 2px 0 0; font-size: 44px; font-weight: 300; letter-spacing: -.03em; line-height: 1; overflow-wrap: anywhere; }
+  .amount { margin: 2px 0 0; font-size: 44px; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -.03em; line-height: 1; overflow-wrap: anywhere; }
   .amount small { font-size: 16px; color: var(--ink-2); margin-left: 8px; letter-spacing: 0; }
   .sum { margin: 0; display: grid; gap: 8px; }
   .sum div { display: grid; grid-template-columns: 128px 1fr; gap: 10px; align-items: baseline; }
   .sum dt { font-size: 13px; color: var(--ink-3); }
   .sum dd { margin: 0; font-size: 14px; user-select: text; }
-  .addr { font-size: 12.5px; word-break: break-all; line-height: 1.5; }
+  .addr { font-size: 13px; word-break: break-all; line-height: 20px; }
   .faint { color: var(--ink-3); font-size: 12px; }
   .rows { margin: 0; padding: 0; list-style: none; display: grid; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); }
   .rows li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }

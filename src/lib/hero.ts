@@ -6,10 +6,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
-import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
 import gsap from 'gsap'
 import { CustomEase } from 'gsap/CustomEase'
 import { encode } from 'uqr'
@@ -263,68 +261,7 @@ const backdropMat = new THREE.ShaderMaterial({
   depthWrite: false,
 })
 
-// rack focus: the deck alone (layer CARDS) is rendered into its own target, blurred, composited over the backdrop.
-// Full resolution, so at zero blur it is the very same picture and the pass can switch off without a pop.
-const CARDS = 1
-const BLUR = {
-  uniforms: { tex: { value: null as THREE.Texture | null }, dir: { value: new THREE.Vector2() } },
-  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }`,
-  fragmentShader: `
-    uniform sampler2D tex; uniform vec2 dir; varying vec2 vUv;
-    void main(){ // 9-tap gaussian on premultiplied colour
-      vec4 c = texture2D(tex, vUv) * .2270270270;
-      c += (texture2D(tex, vUv + dir) + texture2D(tex, vUv - dir)) * .1945945946;
-      c += (texture2D(tex, vUv + dir * 2.) + texture2D(tex, vUv - dir * 2.)) * .1216216216;
-      c += (texture2D(tex, vUv + dir * 3.) + texture2D(tex, vUv - dir * 3.)) * .0540540541;
-      c += (texture2D(tex, vUv + dir * 4.) + texture2D(tex, vUv - dir * 4.)) * .0162162162;
-      gl_FragColor = c;
-    }`,
-}
-class DeckPass extends Pass {
-  amount = 0 // 0 sharp .. 1 far and soft
-  private full: THREE.WebGLRenderTarget
-  private a: THREE.WebGLRenderTarget
-  private b: THREE.WebGLRenderTarget
-  private blur = new THREE.ShaderMaterial({ ...BLUR, uniforms: THREE.UniformsUtils.clone(BLUR.uniforms), depthTest: false, depthWrite: false })
-  private comp = new THREE.ShaderMaterial({
-    uniforms: { tex: { value: null as THREE.Texture | null } },
-    vertexShader: BLUR.vertexShader,
-    fragmentShader: `uniform sampler2D tex; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tex, vUv); }`,
-    transparent: true, depthTest: false, depthWrite: false,
-    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
-  })
-  private quad = new FullScreenQuad(this.blur)
-  private w = 1
-  private h = 1
-  constructor(private scene: THREE.Scene, private camera: THREE.Camera) {
-    super()
-    this.needsSwap = false
-    const o = { type: THREE.HalfFloatType }
-    this.full = new THREE.WebGLRenderTarget(1, 1, { ...o, samples: 4 })
-    this.a = new THREE.WebGLRenderTarget(1, 1, o)
-    this.b = new THREE.WebGLRenderTarget(1, 1, o)
-  }
-  setSize(w: number, h: number) { this.w = w; this.h = h; for (const t of [this.full, this.a, this.b]) t.setSize(w, h) }
-  render(r: THREE.WebGLRenderer, _w: THREE.WebGLRenderTarget, read: THREE.WebGLRenderTarget) {
-    const bg = this.scene.background, clear = r.getClearAlpha(), auto = r.autoClear
-    this.scene.background = null
-    this.camera.layers.set(CARDS)
-    r.setClearAlpha(0)
-    r.setRenderTarget(this.full); r.clear(); r.render(this.scene, this.camera)
-    this.scene.background = bg; r.setClearAlpha(clear)
-    const step = this.amount * 2.4 // device px between taps: up to ~10 px of reach
-    this.quad.material = this.blur
-    this.blur.uniforms.tex.value = this.full.texture; this.blur.uniforms.dir.value.set(step / this.w, 0)
-    r.setRenderTarget(this.a); this.quad.render(r)
-    this.blur.uniforms.tex.value = this.a.texture; this.blur.uniforms.dir.value.set(0, step / this.h)
-    r.setRenderTarget(this.b); this.quad.render(r)
-    this.quad.material = this.comp
-    this.comp.uniforms.tex.value = this.b.texture
-    r.autoClear = false
-    r.setRenderTarget(read); this.quad.render(r)
-    r.autoClear = auto
-  }
-}
+const CARDS = 1 // the cards' own layer (hover picking)
 
 // last pass, in display space: the left veil behind the wallet column (was a CSS gradient: DOM gradients band) and a
 // static interleaved-gradient-noise dither of one 8-bit step, so no gradient on screen shows steps
@@ -446,14 +383,12 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
 
   const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }))
   composer.addPass(new RenderPass(scene, camera))
-  const deckPass = new DeckPass(scene, camera)
-  composer.addPass(deckPass)
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.12, 0.4, 1.0) // print stays under the threshold
-  composer.addPass(bloom)
+  // no blur and no glow anywhere (owner 11.10: «не нравится размытие, хочется чёткости»): the far deck reads by
+  // depth and the backdrop's dimming, the card by its own edge light, not a halo
   composer.addPass(new OutputPass())
   const finish = new ShaderPass(FINISH)
   composer.addPass(finish)
-  const focus = { v: 1 } // 1 = deck far and soft (locked / welcome), 0 = sharp
+  const focus = { v: 1 } // ponytail: the intro's timings still tween it; nothing blurs since 11.10 (drop with the intro rewrite)
 
   // until the GLB arrives: a rounded box body and a flat face plane; then the model's own body + front face
   let bodyGeo: THREE.BufferGeometry = new RoundedBoxGeometry(W, H, D, 6, 0.12)
@@ -715,22 +650,21 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
   let lastRing = NaN, lean = 0
   const tmp = new THREE.Euler(), qB = new THREE.Quaternion(), qT = new THREE.Quaternion(), vB = new THREE.Vector3()
   // phones (owner 10.10: not smooth at 120 Hz, the phone heats): while frames keep missing the display's pace, the
-  // resolution steps down (2 -> 1.25) and then the soft glow goes; never back up within a run, so it cannot oscillate
+  // resolution steps down (2 -> 1.25); never back up within a run, so it cannot oscillate
   let slow = 0, behind = 0
   function pace(raw: number, t: number) {
-    if (innerWidth >= 860 || t < 4 || raw > 0.25 || sharpOn || birth.on || (DPR <= 1.25 && !bloom.enabled)) return
+    if (innerWidth >= 860 || t < 4 || raw > 0.25 || sharpOn || birth.on || DPR <= 1.25) return
     slow += (raw - slow) * 0.05
     behind = slow > tick * 1.4 ? behind + raw : 0
     if (behind < 2) return
     behind = 0; slow = tick
     if (DPR > 1.25) { DPR = Math.max(1.25, DPR - 0.25); renderer.setPixelRatio(DPR); composer.setPixelRatio(DPR); layout() }
-    else if (bloom.enabled) bloom.enabled = false
-    if (import.meta.env.DEV) console.warn(`[pace] ${Math.round(1 / tick)} Hz display: dpr ${DPR}, glow ${bloom.enabled}`)
+    if (import.meta.env.DEV) console.warn(`[pace] ${Math.round(1 / tick)} Hz display: dpr ${DPR}`)
   }
   // dev: window.__pace(1 / 240) pretends a 240 Hz display, to watch the steps on a fast machine
   // dev: window.__cards(true) — every shown card's world matrix, to check by numbers that no card cuts through another
   if (import.meta.env.DEV) (window as any).__cards = (info = false) => slots.filter(s => s.slot.visible).map(s => (s.body.updateWorldMatrix(true, false), info ? { m: Array.from(s.body.matrixWorld.elements), i: slots.indexOf(s), d: +offset(slots.indexOf(s)).toFixed(2), k: +s.spread.v.toFixed(3) } : Array.from(s.body.matrixWorld.elements)))
-  if (import.meta.env.DEV) (window as any).__pace = (k?: number) => (k && (tick = k), { tick, slow, behind, DPR, sharpOn, birth: birth.on, w: innerWidth, bloom: bloom.enabled })
+  if (import.meta.env.DEV) (window as any).__pace = (k?: number) => (k && (tick = k), { tick, slow, behind, DPR, sharpOn, birth: birth.on, w: innerWidth })
   function frame() {
     timer.update()
     const raw = timer.getDelta(), dt = Math.min(raw, 1 / 20), t = timer.getElapsed()
@@ -792,11 +726,8 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
 
   function draw() {
     if (!canvas.clientWidth || !canvas.clientHeight) return
-    deckPass.amount = focus.v
-    deckPass.enabled = focus.v > 0.002 // sharp: the plain render, no extra targets
-    if (deckPass.enabled) camera.layers.set(0); else camera.layers.enableAll()
-    composer.render()
     camera.layers.enableAll()
+    composer.render()
   }
 
   const ro = new ResizeObserver(layout)

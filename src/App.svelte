@@ -433,7 +433,7 @@
     const hole = colEl?.querySelector('.hole')?.getBoundingClientRect(), top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0
     if (!hole || !cardView) return setAway(true)
     setAway(hole.bottom < top + 24)
-    hero.setBand(hole.top + 8, hole.bottom - 8)
+    hero.setBand(hole.top - 6, hole.bottom - 22) // the card's optical centre sits low in its band: this evens the air
   }
   $effect(() => { void view; void hero; void phone; requestAnimationFrame(band) })
   $effect(() => { addEventListener('resize', band); return () => removeEventListener('resize', band) })
@@ -543,6 +543,7 @@
 
   // ---------------------------------------------------------------- send (form checks here; the core re-checks, builds and signs)
   let to = $state(''), amount = $state(''), touched = $state(false), preparing = $state(false)
+  const recipients = $derived(accountList.some(a => a.id !== acc?.id && !a.watch && valid(addressFor(a, chain))) || contactList.some(c => valid(c.address)))
   const contactHit = $derived(contactList.find(c => c.name.toLowerCase() === to.trim().toLowerCase()))
   const toAddr = $derived(contactHit ? contactHit.address : to.trim())
   const valid = (a: string) => (chain.kind === 'evm' ? isEvmAddress(a) : isAddress(a))
@@ -818,6 +819,7 @@
   function keys(e: KeyboardEvent) {
     if (e.key === 'Escape' && picker) { picker = ''; return } // the token list closes, the swap stays
     resetIdle()
+    if (e.key === 'Escape' && txOpen) { txOpen = ''; return }
     if (e.key === 'Escape' && menu && !sheet) { menu = ''; return }
     if (e.target instanceof HTMLInputElement) return
     if (e.key === 'Escape' && !sheet && view !== 'home' && view !== 'locked') back()
@@ -926,7 +928,7 @@
                   </button>
                 {/each}
               {/if}
-              <label class="toggle"><input type="checkbox" bind:checked={showTest} /><span>{t('net.showTest')}</span></label>
+              <label class="toggle"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
               <button class="mi add" onclick={() => (addingNet = true)}><Icon name="plus" size={16} />{t('net.add')}</button>
             {:else}
               <form class="netform" onsubmit={addNet} novalidate>
@@ -987,12 +989,12 @@
     </nav>
 
     <div class="right">
-      <button class="btn icon gear" aria-label={t('nav.settings')} onclick={() => go('settings')}><Icon name="gear" /></button>
+      <button class="btn icon gear" class:cur={view === 'settings'} aria-label={t('nav.settings')} onclick={() => go('settings')}><Icon name="gear" /></button>
       {#if !vaultOpen}<button class="btn icon" aria-label={t('lock.action')} onclick={lock}><Icon name="lock" /></button>{/if}
     </div>
   </header>
 
-  {#if (menu || txOpen) && phone}<div class="mveil" transition:fade={{ duration: still() ? 0 : 200 }} onclick={() => (txOpen = '')} role="presentation"></div>{/if}
+  {#if (menu && phone) || txOpen}<div class="mveil" transition:fade={{ duration: still() ? 0 : 200 }} onclick={() => (txOpen = '')} role="presentation"></div>{/if}
   <main class="col" class:quiet class:settled class:frame={view === 'addon'} class:full={view === 'send' || view === 'swap'} bind:this={colEl} onscroll={band} use:pullRefresh={pullFor(view)}>
     <div class="pullmark" aria-hidden="true"><Icon name="flip" size={18} /></div>
     {#if view === 'home'}
@@ -1001,7 +1003,7 @@
         <p class="muted cap"><span class="line"><span>{t('home.total', { acc: acc?.name ?? '', net: chain.name })}</span></span></p>
         <p class="bal display num"><span class="line"><span style="--d:60ms">{cur ? fmt(shown.current) : '—'}<small class="unit">{chain.symbol}</small></span></span></p>
       {/key}
-      {#if usdTotal}<p class="usd faint appear" style="--d:100ms">≈ {usd(usdTotal.sum)}{#if usdTotal.missing}{' · '}{t('usd.missing', { n: usdTotal.missing })}{/if}</p>{/if}
+      {#if !chain.test && showUsd}<p class="usd faint appear" style="--d:100ms">{#if usdTotal}≈ {usd(usdTotal.sum)}{#if usdTotal.missing}{' · '}{t('usd.missing', { n: usdTotal.missing })}{/if}{/if}</p>{/if}
       <div class="acts money appear" style="--d:140ms">
         <button class="btn solid" onclick={() => send()} disabled={!tokens.length || !!acc?.watch}><Icon name="send" />{t('act.send')}</button>
         <button class="btn" onclick={receive} disabled={!myAddress}><Icon name="receive" />{t('act.receive')}</button>
@@ -1026,7 +1028,7 @@
             <button class="trow" onclick={() => open(c.id)}>
               {@render tokIcon(c)}
               <span class="tn" class:fake={c.name.startsWith(t('tok.fake'))}><b class="vt" style:view-transition-name={vtId === c.id ? 'sym' : null}>{c.sym}</b><small class="faint">{c.name}</small></span>
-              <span class="tv"><span class="mono">{fmt(c.amount)}</span><small class="faint mono">{v === undefined ? c.sym : usd(v)}</small></span>
+              <span class="tv"><span class="num">{fmt(c.amount)}</span><small class="faint num">{v === undefined ? c.sym : usd(v)}</small></span>
             </button>
           </li>
         {:else}
@@ -1043,9 +1045,9 @@
       <div class="hole s" aria-hidden="true"></div>
       <button class="back" onclick={back}><Icon name="back" />{t('act.allTokens')}</button>
       {#key card.id}
-        <h2 class="display t"><span class="line"><span class="vt" style:view-transition-name={vtId === card.id ? 'sym' : null}>{card.sym}</span></span></h2>
+        <h2 class="display t s"><span class="line"><span class="vt" style:view-transition-name={vtId === card.id ? 'sym' : null}>{card.sym}</span></span></h2>
         <p class="muted appear" style="--d:80ms">{card.name}</p>
-        <p class="amt mono appear" style="--d:140ms">{fmt(card.amount, card.sym)}</p>
+        <p class="amt display num appear" style="--d:140ms">{fmt(card.amount)}<small class="unit">{card.sym}</small></p>
         {#if valueOf(card) !== undefined}<p class="faint appear" style="--d:170ms">≈ {usd(valueOf(card)!)} · 1 {card.sym} = {usd(prices[priceId(card)])}</p>{/if}
         <div class="acts money appear" style="--d:240ms">
           {#if !acc?.watch}<button class="btn solid" onclick={() => send()}><Icon name="send" />{t('act.send')}</button>{/if}
@@ -1093,7 +1095,7 @@
               <button type="button" class="tag sq" onclick={scanTo} aria-label={t('send.scan')} title={t('send.scan')}><Icon name="scan" size={16} /></button>{/if}</span>
           {#if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
         </label>
-        <div class="chips appear" style="--d:120ms">
+        {#if recipients}<div class="chips appear" style="--d:120ms">
           <!-- one tap: the owner's other accounts first, then the address book -->
           {#each accountList.filter(a => a.id !== acc?.id && !a.watch && valid(addressFor(a, chain))).slice(0, 3) as a (a.id)}
             <button type="button" class="tag" class:cur={to === addressFor(a, chain)} onclick={() => (to = addressFor(a, chain))}>{a.name}</button>
@@ -1101,11 +1103,11 @@
           {#each contactList.filter(c => valid(c.address)).slice(0, 4) as c}
             <button type="button" class="tag" class:cur={contactHit === c} onclick={() => (to = c.name)}>{c.name}</button>
           {/each}
-        </div>
+        </div>{/if}
         <label class="appear amtl" style="--d:160ms">
           <span class="label">{t('send.amount')}</span>
           <span class="field" class:bad={touched && amtErr}>
-            <input bind:value={amount} inputmode={phone ? 'none' : 'decimal'} readonly={phone} placeholder="0" class="mono" autocomplete="off" />
+            <input bind:value={amount} inputmode={phone ? 'none' : 'decimal'} readonly={phone} placeholder="0" class="num" autocomplete="off" />
             <span class="faint">{card.sym}</span>
             {#if maxSend(card, chain.kind) === 'max' && card.amount > 0}<button type="button" class="tag" onclick={() => evmMax(myAddress, chain, valid(toAddr) ? toAddr : undefined).then(v => countInto(x => (amount = x), amount, v), e => flash(String(e)))}>{t('send.max')}</button>
             {:else if maxSend(card) && Number(maxSend(card)) > 0}<button type="button" class="tag" onclick={() => countInto(v => (amount = v), amount, maxSend(card)!)}>{t('send.max')}</button>{/if}
@@ -1130,26 +1132,28 @@
       {#if !canSwap}<p class="note">{t('swap.mainnetOnly')}</p>
       {:else}
         <form class="form swapf" onsubmit={reviewSwap} novalidate>
-          <label>
-            <span class="label">{t('swap.give')}</span>
-            <span class="field">
+          <label class="swcard">
+            <span class="swcap"><span>{t('swap.give')}</span><span>{t('send.available', { v: fmt(swInCard?.amount ?? 0, symOf(swIn)) })}</span></span>
+            <span class="swrow">
               <button type="button" class="tokbtn" onclick={() => openPicker('in')} aria-haspopup="dialog">{@render swapIcon(swIn)}<b>{symOf(swIn)}</b><Icon name="chevron" size={14} /></button>
-              <input bind:value={swAmt} inputmode={phone ? 'none' : 'decimal'} readonly={phone} placeholder="0" class="mono" autocomplete="off" />
+              <input bind:value={swAmt} inputmode={phone ? 'none' : 'decimal'} readonly={phone} placeholder="0" class="num" autocomplete="off" />
               {#if swMax && Number(swMax) > 0}<button type="button" class="tag" onclick={() => countInto(v => (swAmt = v), swAmt, swMax!)}>{t('send.max')}</button>{/if}
             </span>
-            <span class="faint small">{t('send.available', { v: fmt(swInCard?.amount ?? 0, symOf(swIn)) })}</span>
           </label>
-          <div class="swdir"><span class="label">{t('swap.get')}</span><button type="button" class="btn icon" aria-label={t('swap.flip')} onclick={flipSwap}><Icon name="swap" /></button></div>
-          <div class="field get">
-            <button type="button" class="tokbtn" onclick={() => openPicker('out')} aria-haspopup="dialog">{@render swapIcon(swOut)}<b>{symOf(swOut)}</b><Icon name="chevron" size={14} /></button>
-            <span class="mono getv" class:wait={!swQuote && !!swLast} class:faint={!swShown}>{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} />{:else}{swAmt.trim() && !swErr ? '…' : '0'}{/if}</span>
+          <div class="seam"><button type="button" class="btn icon" aria-label={t('swap.flip')} onclick={flipSwap}><Icon name="swap" /></button></div>
+          <div class="swcard">
+            <span class="swcap"><span>{t('swap.get')}</span></span>
+            <span class="swrow">
+              <button type="button" class="tokbtn" onclick={() => openPicker('out')} aria-haspopup="dialog">{@render swapIcon(swOut)}<b>{symOf(swOut)}</b><Icon name="chevron" size={14} /></button>
+              <span class="num getv" class:wait={!swQuote && !!swLast} class:faint={!swShown}>{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} />{:else}{swAmt.trim() && !swErr ? '…' : '0'}{/if}</span>
+            </span>
           </div>
           {#if picked[swOut] && !picked[swOut].verified}<span class="err">{t('swap.unverified', { m: short(swOut) })}</span>{/if}
           <!-- the quote rolls into place; a newer question keeps the last numbers dimmed instead of a blank (M-33, M-34) -->
           <dl class="sum" class:wait={!swQuote && !!swLast}>
             {#if swShown}
               <div class="more" transition:slide={{ duration: still() ? 0 : 320, easing: cubicOut }}>
-                <div><dt>{t('swap.min')}</dt><dd class="mono"><Roll text={fmt(Number(swShown.min_out))} /> {symOf(swOut)}</dd></div>
+                <div><dt>{t('swap.min')}</dt><dd class="num"><Roll text={fmt(Number(swShown.min_out))} /> {symOf(swOut)}</dd></div>
               </div>
             {/if}
           </dl>
@@ -1198,21 +1202,14 @@
           {@const d = raw && raw !== 'err' ? raw : null}
           {@const kind = d ? txKind(d) : null}
           {#if i === 0 || dayOf(hist[i - 1].time) !== dayOf(x.time)}<li class="day appear" style="--d:{i * 30}ms">{dayOf(x.time)}</li>{/if}
-          <!-- phone: the whole row opens the operation below; the desktop keeps its two buttons in the row -->
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex (a button on the phone only: role and tabindex come together) -->
-          <li class="appear" style="--d:{i * 30}ms" class:tap={phone} role={phone ? 'button' : undefined} tabindex={phone ? 0 : undefined}
-            onclick={() => phone && (txOpen = x.sig)} onkeydown={e => phone && e.key === 'Enter' && (txOpen = x.sig)}>
-            <span class="dir" class:in={kind === 'in'}><Icon name={!x.ok ? 'close' : kind === 'in' ? 'receive' : kind === 'out' ? 'send' : kind === 'swap' ? 'swap' : 'check'} size={16} /></span>
-            <span>
-              <span class="what">{#if d && kind}{t(`hist.${kind}`)}{#if d.moves.length}<b class="mono">{d.moves.map(moveText).join('  ')}</b>{/if}{:else}<span class="mono">{short(x.sig)}</span>{/if}</span>
-              <small class="faint">
-                {#if d?.peer}{t(kind === 'in' ? 'hist.from' : 'hist.to', { a: peerName(d.peer) })}{' · '}{/if}{clock(x.time)}{#if d?.fee && !phone}{' · '}{t('hist.fee', { v: chain.kind === 'evm' ? fmt(Number(d.fee) / 1e18, chain.symbol) : solText(d.fee) })}{/if}{#if !x.ok}{' · '}{t('hist.failed')}{:else if raw === 'err'}{' · '}{t('hist.detailFail')}{/if}
-              </small>
-            </span>
-            <span class="row">
-              {#if cluster(chain) !== 'local'}<button class="tag" onclick={() => openTx(x.sig, chain).catch(e => flash(String(e)))} title={t('hist.open')}>{t('hist.openShort')}</button>{/if}
-              <button class="tag" onclick={() => copy(x.sig)}>{copied === x.sig ? t('act.copied') : t('hist.copySig')}</button>
-            </span>
+          <!-- a row is one target: what and with whom on the left, the amount in its own column; details open in a sheet -->
+          <li class="appear" style="--d:{i * 30}ms">
+            <button class="txrow" onclick={() => (txOpen = x.sig)}>
+              <span class="dir"><Icon name={!x.ok ? 'close' : kind === 'in' ? 'receive' : kind === 'out' ? 'send' : kind === 'swap' ? 'swap' : 'check'} size={16} /></span>
+              <span class="txm"><span>{d && kind ? t(`hist.${kind}`) : short(x.sig)}</span>
+                <small class="faint">{#if d?.peer}{t(kind === 'in' ? 'hist.from' : 'hist.to', { a: peerName(d.peer) })}{' · '}{/if}{clock(x.time)}{#if !x.ok}{' · '}{t('hist.failed')}{:else if raw === 'err'}{' · '}{t('hist.detailFail')}{/if}</small></span>
+              <span class="txv num">{#each d?.moves ?? [] as m}<span class:in={m.incoming}>{moveText(m)}</span>{/each}</span>
+            </button>
           </li>
         {:else}
           {#if !histState}<li class="faint">{t('hist.empty')}</li>{/if}
@@ -1299,9 +1296,7 @@
       <!-- owner 09.10: fewer words, one line per setting; the own-node block is gone (other wallets have none; the core keeps it) -->
       <h2 class="display t s"><span class="line"><span>{t('set.title')}</span></span></h2>
       <div class="sets">
-        <div class="set"><span>{t('set.lang')}</span>
-          <div class="seg small" use:pad={0}><span class="seg-pad"></span><button data-seg class="cur" onclick={() => (i18n.lang = 'ru')}>Русский</button></div>
-        </div>
+        <div class="set"><span>{t('set.lang')}</span><span class="val">Русский</span></div>
         <!-- «Фон» hidden (owner 10.10: the backgrounds are being redone from scratch; one stays meanwhile) -->
         <label class="set"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
         {#if pinned.length}<div class="set"><span>{t('set.nets')}</span>
@@ -1342,7 +1337,7 @@
       </div>
     {/if}
   </main>
-  {#if txOpen && phone}
+  {#if txOpen}
     {@const x = hist.find(h => h.sig === txOpen)}
     {@const raw = txs[`${myAddress}|${txOpen}`]}
     {@const d = raw && raw !== 'err' ? raw : null}
@@ -1350,11 +1345,11 @@
     <div class="menu panel txd" role="dialog" aria-label={t('hist.title')} in:pop out:pop={{ out: true }} use:dragDown={() => (txOpen = '')}>
       <span class="grab" aria-hidden="true"></span>
       <p class="mh">{d && kind ? t(`hist.${kind}`) : t('hist.title')}{x && !x.ok ? ` · ${t('hist.failed')}` : ''}</p>
-      {#if d?.moves.length}<p class="txamt mono">{d.moves.map(moveText).join('  ')}</p>{/if}
+      {#if d?.moves.length}<p class="txamt num">{d.moves.map(moveText).join('  ')}</p>{/if}
       <dl class="sum">
         {#if d?.peer}<div><dt>{kind === 'in' ? t('hist.fromL') : t('hist.toL')}</dt><dd class="mono addr2">{peerName(d.peer) !== short(d.peer) ? `${peerName(d.peer)} · ` : ''}{d.peer}</dd></div>{/if}
         {#if x}<div><dt>{t('hist.when')}</dt><dd>{when(x.time)}</dd></div>{/if}
-        {#if d?.fee}<div><dt>{t('hist.feeL')}</dt><dd class="mono">{chain.kind === 'evm' ? fmt(Number(d.fee) / 1e18, chain.symbol) : solText(d.fee)}</dd></div>{/if}
+        {#if d?.fee}<div><dt>{t('hist.feeL')}</dt><dd class="num">{chain.kind === 'evm' ? fmt(Number(d.fee) / 1e18, chain.symbol) : solText(d.fee)}</dd></div>{/if}
         <div><dt>{t('send.net')}</dt><dd>{chain.name}</dd></div>
       </dl>
       <div class="two">
@@ -1418,13 +1413,13 @@
     contain: layout paint; /* width unfolds 58 -> 380 once; contained, so it never reflows the page */
     position: fixed; left: 50%; bottom: clamp(72px, 15vh, 140px); z-index: 6; translate: -50% 0; /* under the deck, centred like the whole scene before entry */
     width: var(--w); height: 58px; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 19px; overflow: hidden;
-    border-radius: var(--r-pill); background: rgb(24 24 29 / .78); border: 1px solid var(--line);
-    backdrop-filter: blur(16px); box-shadow: var(--metal-edge), 0 20px 48px rgb(0 0 0 / .5);
+    border-radius: var(--r-pill); background: #18181d; border: 1px solid var(--line);
+    box-shadow: var(--metal-edge), var(--lift);
     animation: unfold 760ms var(--ease) 120ms backwards; /* starts when the intro opens (deck already in place) */
     transition: border-color 300ms ease, width 320ms var(--fold), scale 220ms var(--fold) 260ms, opacity 180ms ease 300ms;
   }
   @keyframes unfold { from { width: 58px; scale: .5; opacity: 0; } 34% { width: 58px; scale: 1; opacity: 1; } }
-  .gate:focus-within { border-color: rgb(238 235 229 / .26); }
+  .gate:focus-within { border-color: var(--line-hi); }
   .gate.bad { border-color: rgb(255 90 46 / .7); transition: border-color 160ms ease; }
   .gate.shut { width: 58px; scale: .3; opacity: 0; }
   .gi { display: grid; color: var(--ink-2); flex: none; }
@@ -1467,13 +1462,16 @@
   .pickers { display: flex; gap: 8px; justify-self: start; }
   .wrap { position: relative; }
   .right { justify-self: end; display: flex; gap: 8px; margin-right: var(--wc, 0px); }
-  .chip { display: inline-flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 14px; border: 0; border-radius: var(--r-pill); background: var(--metal); box-shadow: var(--metal-edge); cursor: pointer; font-size: 14px; font-weight: 600; transition: background-color 120ms ease; }
+  .chip { display: inline-flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 14px; border: 0; border-radius: var(--r-pill); background: var(--metal); box-shadow: var(--metal-edge); cursor: pointer; font-size: 14px; font-weight: 600; white-space: nowrap; transition: background-color 120ms ease; }
   .chip:hover { background: var(--metal-hi); }
   .chip.real { box-shadow: var(--metal-edge), inset 0 0 0 1px rgb(255 90 46 / .35); }
   .chip .mono { font-size: 12px; }
-  .chip em, .mi em { font-style: normal; font-size: 11px; padding: 1px 7px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); }
+  @media (max-width: 1100px) { .chip .mono { display: none; } } /* the header keeps one line */
+  .chip em, .mi em { font-style: normal; font-size: 12px; padding: 1px 7px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); }
   .cdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .cdot.real { background: var(--ember); box-shadow: 0 0 10px rgb(255 90 46 / .7); }
+  .cdot.real { background: var(--ember); }
+  .mi .cdot.real, .ntag .cdot.real { background: var(--ink-2); } /* ember marks the current network only */
+  .mi .cdot { margin: 0 4px; } /* row text starts at 36px */
   .cdot.test { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
 
   .menu { position: absolute; top: calc(100% + 8px); left: 0; min-width: 300px; padding: 8px; display: grid; gap: 2px; transform-origin: top left; z-index: 20; }
@@ -1490,40 +1488,40 @@
   .mi:hover, .mi.cur { background: rgb(238 235 229 / .07); }
   .mi :global(svg) { margin-left: auto; }
   .mi .mono { font-size: 12px; margin-left: auto; }
-  .mi.add { color: var(--ink-2); }
+  .mi.add { color: var(--ink-2); padding-left: 8px; }
   .net-menu { max-height: calc(100vh - 90px); overflow-y: auto; overscroll-behavior: contain; } /* twenty networks: the list scrolls inside, the window never does */
-  .mi.more { color: var(--ink-2); }
+  .mi.more { color: var(--ink-2); padding-left: 36px; }
   .mi.more :global(svg) { transition: transform 220ms cubic-bezier(.32,.9,.18,1); }
   .mi.more.open :global(svg) { transform: rotate(180deg); }
   .more-list { display: grid; gap: 2px; }
   .mi.add :global(svg) { margin-left: 0; }
-  .toggle { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; font-size: 14px; color: var(--ink-2); cursor: pointer; }
-  .toggle input { accent-color: var(--ink); width: 16px; height: 16px; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 0 10px 0 36px; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
   .netform { display: grid; gap: 8px; padding: 4px; }
-  .fi { min-height: 40px; padding: 0 12px; border: 0; border-radius: 10px; background: none; box-shadow: inset 0 0 0 1px var(--line); outline: none; font-size: 14px; min-width: 0; }
-  .fi:focus { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .45); }
+  .fi { min-height: 40px; padding: 0 12px; border: 0; border-radius: var(--r-sm); background: none; box-shadow: inset 0 0 0 1px var(--line); outline: none; font-size: 14px; min-width: 0; }
+  .fi:focus { box-shadow: inset 0 0 0 1px var(--line-hi); }
+  .fi.mono::placeholder { font-family: var(--font); }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .two :global(.btn) { justify-content: center; }
 
   .seg { position: relative; display: inline-flex; padding: 3px; border-radius: var(--r-pill); background: var(--metal); box-shadow: var(--metal-edge); }
   :global(.seg-pad) { position: absolute; inset: 0; border-radius: var(--r-pill); background: var(--ink); transition: clip-path 450ms var(--ease); pointer-events: none; }
-  .seg button { position: relative; z-index: 1; min-height: 36px; padding: 0 18px; border: 0; background: none; cursor: pointer; border-radius: var(--r-pill); color: var(--ink-2); font-size: 14px; transition: color 350ms ease; }
+  .seg button { position: relative; z-index: 1; min-height: 34px; padding: 0 18px; border: 0; background: none; cursor: pointer; border-radius: var(--r-pill); color: var(--ink-2); font-size: 14px; transition: color 350ms ease; }
   .seg button.cur { color: var(--stage); }
   .seg button:disabled { cursor: not-allowed; opacity: .45; }
   .seg.small button { min-height: 34px; padding: 0 14px; font-size: 13px; }
 
-  .col p { margin: 0; }
+  :where(.col) p { margin: 0; } /* zero weight: a class's own margin wins without !important */
   .mrow { display: flex; align-items: center; gap: 4px; }
   .mrow .mi { flex: 1; }
   .tx .row { display: flex; gap: 6px; }
   .cap { font-size: 14px; }
   .unit { font-size: .38em; letter-spacing: 0; margin-left: .25em; color: var(--ink-2); }
-  .bal { font-size: clamp(48px, 5.6vw, 80px); margin: 10px 0 26px !important; }
-  .usd { margin: -18px 0 22px !important; font-size: 15px; }
-  .acts { display: flex; gap: 10px; flex-wrap: wrap; }
+  .bal { font-size: clamp(48px, 5.6vw, 80px); margin: 8px 0 0; }
+  .usd { margin: 8px 0 0; min-height: 22px; }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; }
   .sh { font-weight: 400; font-size: 13px; color: var(--ink-3); margin: 32px 0 8px; }
   .tokh { display: flex; align-items: center; justify-content: space-between; }
-  .rf { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--ink-3); cursor: pointer; transition: color 300ms ease, background-color 300ms ease; }
+  .rf { width: 30px; height: 30px; margin-right: -7px; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--ink-3); cursor: pointer; transition: color 300ms ease, background-color 300ms ease; }
   .rf:hover:not(:disabled) { color: var(--ink); background: rgb(238 235 229 / .06); }
   .rf.spin :global(svg) { animation: rf 900ms linear infinite; }
   @keyframes rf { to { rotate: 360deg; } }
@@ -1531,35 +1529,34 @@
 
   .rows { list-style: none; margin: 0 -10px; padding: 0; }
   .rows > li.note, .rows > li.faint { padding: 0 10px; } /* the list bleeds 10px left for row hover; plain lines must not */
-  .trow { width: 100%; display: grid; grid-template-columns: 40px 1fr auto; gap: 14px; align-items: center; min-height: 60px; padding: 8px 10px; border: 0; border-radius: 14px; background: none; cursor: pointer; text-align: start; transition: background-color 100ms ease; }
+  .trow { width: 100%; display: grid; grid-template-columns: 40px 1fr auto; gap: 14px; align-items: center; min-height: 60px; padding: 8px 10px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: start; transition: background-color 100ms ease; }
   .trow:hover { background: rgb(238 235 229 / .05); }
   .ticon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; overflow: hidden; background: var(--metal); box-shadow: inset 0 1px 2px rgb(0 0 0 / .5), inset 0 -1px 0 rgb(255 255 255 / .05); }
   .ticon img { width: 22px; height: 22px; }
-  .tn, .tv { display: grid; line-height: 1.3; }
+  .tn, .tv { display: grid; line-height: 20px; }
   .tn b { font-weight: 400; font-size: 15px; letter-spacing: -.025em; }
   /* the ticker flies row <-> title as one word growing: both boxes hug the text, so the two snapshots share a shape
      and the cross-fade has no seam (owner 09.10) */
   .vt { width: fit-content; justify-self: start; }
   .tv { text-align: end; }
-  .tv .mono { font-size: 15px; }
-  .rows small, .tx small { font-size: 12.5px; }
+  .rows small, .tx small { font-size: 13px; }
 
-  .back { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px 0 6px; margin-left: -6px; border: 0; border-radius: var(--r-pill); background: none; color: var(--ink-2); cursor: pointer; transition: color 300ms ease; }
+  .back { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px 0 6px; margin-left: -6px; border: 0; border-radius: var(--r-pill); background: none; color: var(--ink-2); cursor: pointer; transition: color 300ms ease; align-self: flex-start; }
   .back:hover { color: var(--ink); }
-  .t { font-size: clamp(52px, 5.4vw, 80px); margin: 14px 0 8px; }
-  .t.s { font-size: clamp(34px, 3.4vw, 50px); margin-bottom: 18px; }
-  .amt { font-size: 30px; margin-top: 24px !important; }
-  .col .acts { margin: 24px 0 4px; }
-  .note { font-size: 14px; color: var(--ink-2); line-height: 1.5; max-width: 46ch; margin-top: 18px !important; }
-  .unres { display: grid; gap: 8px; margin-top: 18px; justify-items: start; }
+  .t { font-size: clamp(52px, 5.4vw, 80px); margin: 16px 0 8px; }
+  .t.s { font-size: clamp(34px, 3.4vw, 50px); margin-bottom: 16px; }
+  .amt { font-size: clamp(48px, 5.6vw, 80px); margin: 24px 0 8px; } /* the token page leads with the money, like the home total */
+  .col .acts { margin: 24px 0 0; }
+  .note { font-size: 14px; color: var(--ink-2); line-height: 22px; max-width: 46ch; margin-top: 16px; }
+  .unres { display: grid; gap: 8px; margin-top: 16px; justify-items: start; }
   .unres .warn { margin: 0; font-size: 14px; color: var(--ember); max-width: 44ch; }
-  .addr { font-size: 15px; line-height: 1.6; margin-top: 16px !important; overflow-wrap: anywhere; color: var(--ink); }
-  .qrrow { margin-top: 18px; }
+  .addr { font-size: 15px; line-height: 24px; margin-top: 16px; overflow-wrap: anywhere; color: var(--ink); }
+  .qrrow { margin-top: 16px; }
 
   .tx { list-style: none; margin: 0; padding: 0; }
   .tx li { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 14px; padding: 10px 8px; margin: 0 -8px; border-radius: 12px; transition: background-color 280ms ease; }
   .tx li:hover { background: rgb(238 235 229 / .05); }
-  .tx li > span:nth-child(2) { display: grid; line-height: 1.35; }
+  .tx li > span:nth-child(2) { display: grid; line-height: 20px; }
   .dir { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); }
   .ini { font-size: 14px; }
   .tx .mono { font-size: 14px; }
@@ -1572,60 +1569,75 @@
   @keyframes skb { 50% { opacity: .45; } }
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   @media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
-  .hid { margin-top: 10px; }
-  .swdir { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+  .hid { margin-top: 8px; }
   .tokbtn { display: inline-flex; align-items: center; gap: 8px; flex: none; min-height: 40px; padding: 0 10px 0 4px; border: 0; border-radius: 999px; background: rgb(238 235 229 / .06); color: var(--ink); cursor: pointer; transition: background-color 160ms ease; }
+  .tokbtn b { font-weight: 600; }
   .tokbtn:hover { background: rgb(238 235 229 / .11); }
   .tokbtn .ticon { width: 30px; height: 30px; }
   .tokbtn .ticon img { width: 18px; height: 18px; }
-  .field.get { justify-content: space-between; }
-  .getv { font-size: 18px; transition: opacity 200ms ease; }
+  /* swap: two cards, captions inside, the turn key on their seam; amounts large, right, even digits */
+  .swapf { gap: 16px; }
+  .swcard { display: grid; gap: 4px; padding: 12px 16px 12px 12px; border-radius: var(--r-panel); background: rgb(238 235 229 / .03); box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow 300ms ease; }
+  .swcard:focus-within { box-shadow: inset 0 0 0 1px var(--line-hi); }
+  .swcap { display: flex; justify-content: space-between; gap: 16px; padding-left: 4px; font-size: 13px; line-height: 20px; color: var(--ink-3); }
+  .swrow { display: flex; align-items: center; gap: 12px; min-height: 48px; }
+  .swrow input, .getv { flex: 1; min-width: 0; background: none; border: 0; outline: none; text-align: end; font: 400 28px/36px var(--font); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .getv { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: opacity 200ms ease; }
+  .seam { position: relative; z-index: 1; height: 0; margin: -12px 0; display: grid; justify-items: center; align-items: center; }
+  .seam :global(.btn.icon) { background: var(--metal); box-shadow: var(--metal-edge), 0 0 0 4px var(--stage); }
   .getv.wait { opacity: .45; }
   .picker { position: absolute; left: 0; right: 8px; top: 120px; bottom: 24px; display: grid; grid-template-rows: auto 1fr; gap: 8px; padding: 12px; z-index: 30; }
   .phead { display: flex; gap: 8px; align-items: center; }
   .phead .fi { flex: 1; }
   .plist { overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 2px; }
-  .prow { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 12px; padding: 6px 8px; border: 0; border-radius: 14px; background: none; color: var(--ink); text-align: start; cursor: pointer; transition: background-color 100ms ease; }
+  .prow { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 12px; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: none; color: var(--ink); text-align: start; cursor: pointer; transition: background-color 100ms ease; }
   .prow:hover, .prow.cur { background: rgb(238 235 229 / .07); }
-  .prow b { display: block; font-weight: 500; }
-  .prow .unv { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-style: normal; font-size: 11px; font-weight: 500; color: var(--warn, #f2c38a); box-shadow: inset 0 0 0 1px currentColor; vertical-align: 1px; }
+  .prow b { display: block; font-weight: 600; }
+  .prow .unv { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-style: normal; font-size: 12px; font-weight: 600; color: var(--warn, #f2c38a); box-shadow: inset 0 0 0 1px currentColor; vertical-align: 1px; }
   .prow small { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ticon img:not([src]) { opacity: 0; }
   .ticon img:global(.in) { width: 100%; height: 100%; object-fit: cover; animation: tin 240ms ease both; }
   @keyframes tin { from { opacity: 0; } }
-  .tx .what { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-  .tx .what b { font-weight: 400; color: var(--ink); white-space: pre; }
+  .hist li:not(.day) { display: block; padding: 0; }
+  .hist li:hover { background: none; }
+  .txrow { width: 100%; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 60px; padding: 8px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; text-align: start; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background-color 100ms ease; }
+  .txrow:hover { background: rgb(238 235 229 / .05); }
+  .txrow:active { background: rgb(238 235 229 / .08); }
+  .txm, .txv { display: grid; line-height: 20px; min-width: 0; }
+  .txm small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .txv { justify-items: end; white-space: nowrap; color: var(--ink-2); }
+  .txv .in { color: var(--ink); }
   .tx .inb { font-weight: 400; color: var(--ink); white-space: pre; font-size: 14px; }
   .dir.in { color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink-3, var(--line)); }
-  .tx li.day { display: block; padding: 18px 0 6px; margin: 0; font-size: 13px; color: var(--ink-3); background: none; }
+  .tx li.day { display: block; padding: 16px 0 8px; margin: 0; font-size: 13px; color: var(--ink-3); background: none; }
   .tx li.day:first-child { padding-top: 6px; }
 
   .form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .form label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a field never outgrows a phone (inputs have a min width of their own) */
   .err { font-size: 13px; color: var(--ember); }
   .ok { font-size: 12px; color: var(--ink-3); }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .form > .chips { margin-top: -6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .form > .chips { margin-top: -8px; }
   .tag { min-height: 30px; padding: 0 12px; border: 0; border-radius: var(--r-pill); background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font-size: 13px; cursor: pointer; transition: box-shadow 300ms ease, color 300ms ease; }
   .tag:hover, .tag.cur { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .45); color: var(--ink); }
   .tag:disabled { opacity: .4; cursor: not-allowed; }
-  .sum { margin: 0; display: grid; gap: 6px; }
+  .sum { margin: 0; display: grid; gap: 8px; }
   .sum div { display: flex; justify-content: space-between; gap: 16px; font-size: 14px; }
   .sum dt { color: var(--ink-3); }
   .sum dd { margin: 0; }
   .sum .emb { color: var(--ember); }
   .sum.wait dd { opacity: .45; transition: opacity 200ms ease; }
-  .lead { font-size: 15px; margin-bottom: 6px !important; }
+  .lead { font-size: 15px; margin-bottom: 8px; }
   .lead.warn { color: var(--ember); }
   .sum dd { transition: opacity 300ms ease; }
-  .sum .more { display: grid; gap: 6px; justify-content: stretch; }
-  .wide { justify-content: center; width: 100%; margin-top: 4px; }
+  .sum .more { display: grid; gap: 8px; justify-content: stretch; }
+  .wide { justify-content: center; width: 100%; margin-top: 8px; }
 
   .mine { margin-top: 8px; }
-  .nets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px !important; }
+  .nets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .ntag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); padding: 2px 10px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); }
-  .mine .acts { margin: 14px 0 0; }
-  .addc { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr) auto; gap: 8px; margin: 18px 0; }
+  .mine .acts { margin: 16px 0 0; }
+  .addc { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr) auto; gap: 8px; margin: 16px 0; }
   .addc .field, .addc input { min-width: 0; }
   .addc .field { min-height: 44px; }
   .addc .err { grid-column: 1 / -1; }
@@ -1635,8 +1647,11 @@
   .sets { display: grid; margin-top: 8px; }
   .set { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; cursor: default; }
   label.set { cursor: pointer; }
-  .set > span { display: grid; gap: 2px; }
-  .set small { font-size: 12.5px; color: var(--ink-3); max-width: 34ch; line-height: 1.4; }
+  .set > span { display: grid; gap: 2px; flex: 1; min-width: 0; }
+  .set > .val { flex: none; color: var(--ink-2); }
+  .set :global(.btn) { flex: none; }
+  .set small { font-size: 13px; color: var(--ink-3); max-width: 34ch; line-height: 18px; }
+  .set small.warn { color: var(--ember); }
   .set.addons { border-bottom: 0; }
   .set.sub { min-height: 0; padding: 4px 0 12px 14px; font-size: 14px; }
   .set em { font-style: normal; font-size: 12px; }
@@ -1652,7 +1667,7 @@
   .sw::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink-2); transition: translate 260ms var(--ease), background-color 220ms ease; }
   .sw:checked { background: var(--ink); }
   .sw:checked::after { translate: 16px 0; background: var(--stage); }
-  .agentbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; margin-top: 18px; padding: 12px 16px; border: 0; border-radius: 14px; background: rgb(238 235 229 / .06); box-shadow: inset 0 0 0 1px rgb(238 235 229 / .18); color: var(--ink); font-size: 14px; text-align: start; cursor: pointer; transition: background-color 300ms ease; }
+  .agentbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; margin-top: 16px; padding: 12px 16px; border: 0; border-radius: var(--r-sm); background: rgb(238 235 229 / .06); box-shadow: inset 0 0 0 1px rgb(238 235 229 / .18); color: var(--ink); font-size: 14px; text-align: start; cursor: pointer; transition: background-color 300ms ease; }
   .agentbar:hover { background: rgb(238 235 229 / .1); }
   .agentbar span { color: var(--ink-2); }
 
@@ -1669,8 +1684,20 @@
   .toast.ok :global(svg) { color: #c9f2a0; }
   @keyframes tst { from { opacity: 0; transform: translateY(-6px); } }
 
+  .right :global(.gear.cur) { background: rgb(238 235 229 / .1); box-shadow: inset 0 0 0 1px var(--line-hi); }
+  /* an operation's details: a centred panel on the desktop, a sheet from the bottom on the phone */
+  .mveil { position: fixed; inset: 0; z-index: 19; background: rgb(7 7 10 / .62); }
+  .txd { position: fixed; z-index: 26; left: 50%; top: 50%; translate: -50% -50%; width: min(420px, calc(100vw - 32px)); min-width: 0; display: grid; gap: 16px; padding: 20px; transform-origin: 50% 50%; }
+  .txd .mh { margin: 0; }
+  .txamt { margin: 0; font-size: 28px; line-height: 36px; overflow-wrap: anywhere; }
+  .txd .sum div { align-items: baseline; }
+  .txd .sum dt { white-space: nowrap; }
+  .addr2 { font-size: 13px; word-break: break-all; text-align: end; }
+  /* desktop column: no scrollbar seam; content fades out under the bottom edge instead of being cut */
+  .col { scrollbar-width: none; mask-image: linear-gradient(#000 calc(100% - 32px), transparent); }
+
   /* phone-only parts stay out of the desktop */
-  .tabbar, .hole, .pullmark, .mveil, .grab { display: none; }
+  .tabbar, .hole, .pullmark, .grab { display: none; }
 
   /* phone (owner 10.10: the controls people know from phone wallets): one header row, the page scrolls as one with the
      card in a hole at its top, menus are sheets from the bottom, sections in a tab bar under the thumb */
@@ -1688,7 +1715,6 @@
     .w-acc .chip > span:first-child { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .seg button { padding: 0 12px; font-size: 13px; }
 
-    .mveil { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(7 7 10 / .62); }
     .menu, .net-menu {
       position: fixed; left: 0; right: 0; top: auto; bottom: 0; min-width: 0; max-height: 82vh; overflow-y: auto; overscroll-behavior: contain;
       padding: 6px 12px calc(12px + var(--bottom-inset)); border-radius: 22px 22px 0 0;
@@ -1696,18 +1722,18 @@
     .grab { display: block; width: 36px; height: 4px; margin: 4px auto 10px; border-radius: 2px; background: rgb(238 235 229 / .28); }
     .mi { min-height: 52px; }
 
-    .col { left: 0; right: 0; top: 0; bottom: 0; width: auto; padding: calc(64px + var(--top-inset)) 16px calc(92px + var(--bottom-inset)); scrollbar-width: none; overscroll-behavior-y: contain; }
+    .col { left: 0; right: 0; top: 0; bottom: 0; width: auto; padding: calc(64px + var(--top-inset)) 16px calc(92px + var(--bottom-inset)); scrollbar-width: none; overscroll-behavior-y: contain; mask-image: none; }
     .col.full { padding-bottom: calc(16px + var(--bottom-inset)); }
     .lockf { top: auto; bottom: clamp(56px, 12vh, 120px); padding: 0 16px; }
     .hole { display: block; height: clamp(200px, 40vh, 360px); }
     .hole.s { height: clamp(170px, 30vh, 280px); }
     .hole.l { height: clamp(240px, 42vh, 380px); } /* the QR card, with the address and «Скопировать» still in view */
-    .t { font-size: 44px; margin: 6px 0 6px; }
-    .t.s { font-size: 30px; margin: 4px 0 10px; }
+    .t { font-size: 44px; margin: 8px 0; }
+    .t.s { font-size: 30px; margin: 8px 0 16px; }
 
     .tabbar {
       display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 12;
-      padding: 6px 4px calc(6px + var(--bottom-inset)); background: rgb(11 11 14 / .94); box-shadow: 0 -1px 0 var(--line); backdrop-filter: blur(16px);
+      padding: 6px 4px calc(6px + var(--bottom-inset)); background: #0b0b0e; box-shadow: 0 -1px 0 var(--line);
     }
     .tabbar button { display: grid; justify-items: center; align-content: center; gap: 4px; min-height: 56px; padding: 0; border: 0; background: none; color: var(--ink-3); font-size: 12px; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: color 200ms ease; }
     .tabbar .ti { display: grid; place-items: center; width: 56px; height: 30px; border-radius: 999px; transition: background-color 260ms var(--ease); }
@@ -1716,7 +1742,8 @@
     .tabbar button:active .ti { background: rgb(238 235 229 / .18); }
 
     .bal { font-size: 48px; }
-    .acts :global(.btn) { min-height: 44px; }
+    .acts :global(.btn) { min-height: 44px; justify-content: center; }
+    .col .acts:not(.money) { display: grid; grid-template-columns: 1fr 1fr; } /* two equal keys, edge to edge */
     .field .tag.sq { width: 40px; min-height: 40px; } /* paste and scan: a finger's target */
     /* a fingertip, not a pointer: small controls grow to a thumb's size on the phone */
     .chip { min-height: 44px; }
@@ -1735,7 +1762,7 @@
     /* pull to refresh: the mark comes down under the header and turns, then spins while the network answers */
     .pullmark {
       display: grid; place-items: center; position: fixed; left: 50%; top: calc(52px + var(--top-inset)); z-index: 11; width: 36px; height: 36px; margin-left: -18px;
-      border-radius: 50%; background: var(--metal); box-shadow: var(--metal-edge), 0 6px 18px rgb(0 0 0 / .5); color: var(--ink); pointer-events: none;
+      border-radius: 50%; background: var(--metal); box-shadow: var(--metal-edge), var(--lift); color: var(--ink); pointer-events: none;
       opacity: var(--pull, 0); transform: translateY(var(--pull-y, 0px)) rotate(calc(var(--pull, 0) * 270deg));
     }
     .col:global(.refreshing) .pullmark :global(svg) { animation: rf 900ms linear infinite; }
@@ -1746,38 +1773,23 @@
     .col.full { display: flex; flex-direction: column; padding-top: calc(8px + var(--top-inset)); }
     .top.bare { display: none; } /* a send is one task: its own screen, the network named in the form */
     .col.full .form { flex: 1; display: flex; flex-direction: column; gap: 12px; }
-    .col.full .t.s { font-size: 30px; margin: 4px 0 12px; }
     .col.full .wide { margin-top: auto; }
     .col.full .amtl { margin-top: auto; } /* the amount sits in the middle of the free space, not under the title */
     .back { min-height: 44px; }
-    .txd .sum dt { white-space: nowrap; }
-    .set small.warn { color: var(--ember); }
     .amtl { justify-items: center; text-align: center; }
     .amtl .label { justify-self: start; }
     .amtl .field { justify-content: center; min-height: 64px; padding: 0; box-shadow: none; gap: 10px; }
-    .amtl .field input { flex: none; field-sizing: content; min-width: 1ch; max-width: 70vw; font: 300 44px/1.1 var(--font); letter-spacing: -.02em; text-align: center; }
+    .amtl .field input { flex: none; field-sizing: content; min-width: 1ch; max-width: 70vw; font: 400 44px/52px var(--font); letter-spacing: -.02em; text-align: center; font-variant-numeric: tabular-nums; }
     .amtl .field > .faint { font-size: 20px; }
     .amtl .field > :global(.tag) { display: none; }
     .parts { justify-content: center; }
     .parts .tag { min-height: 36px; padding: 0 16px; }
 
-    /* swap: two stacked cards, the turn-over key on their seam, amounts big and to the right */
-    .swapf .field { min-height: 76px; padding: 0 16px 0 10px; border-radius: 20px; background: rgb(238 235 229 / .035); }
-    .swapf .field input, .swapf .getv { flex: 1; min-width: 0; text-align: end; font: 300 30px/1.1 var(--font); letter-spacing: -.02em; }
-    .swapf .swdir { position: relative; height: 0; margin: 0; z-index: 1; }
-    .swapf .swdir .label { position: absolute; left: 0; top: 4px; }
-    .swapf .swdir :global(.btn.icon) { position: absolute; left: 50%; top: -14px; translate: -50% 0; width: 44px; min-height: 44px; background: var(--metal); box-shadow: var(--metal-edge), 0 0 0 4px var(--stage); }
-    .swapf > .field.get { margin-top: 26px; }
+    .seam { margin: -8px 0; } /* the form's phone gap is 12: cards stay 8 apart */
+    .seam :global(.btn.icon) { width: 44px; min-height: 44px; }
 
-    /* history: a row is one tap target; its details open in a sheet */
-    .hist .row { display: none; }
-    .hist li { grid-template-columns: 36px 1fr; }
-    .hist li.tap { cursor: pointer; -webkit-tap-highlight-color: transparent; }
-    .hist li.tap:active { background: rgb(238 235 229 / .06); }
-    .txd { z-index: 26; display: grid; gap: 14px; padding-left: 20px; padding-right: 20px; }
-    .txd .mh { margin: 0; }
-    .txamt { margin: 0; font-size: 26px; line-height: 1.25; overflow-wrap: anywhere; }
-    .txd .sum div { align-items: baseline; }
-    .addr2 { font-size: 13px; word-break: break-all; text-align: end; }
+    /* the operation's details: a sheet from the bottom, buttons a finger wide */
+    .txd { translate: none; width: auto; padding-left: 20px; padding-right: 20px; }
+    .txd .btn { min-height: 44px; }
   }
 </style>
