@@ -38,7 +38,7 @@ pub async fn usd(mints: Vec<String>, coins: Vec<String>) -> Result<HashMap<Strin
         "ETH" => "ethereum", "POL" => "polygon-ecosystem-token", "BNB" => "binancecoin", "AVAX" => "avalanche-2", "S" => "sonic-3",
         "xDAI" => "xdai", "BERA" => "berachain-bera", "MON" => "monad", "HYPE" => "hyperliquid",
         "XPL" => "plasma", "MNT" => "mantle", "SEI" => "sei-network", "CELO" => "celo", "FLR" => "flare-networks", "RON" => "ronin",
-        "OKB" => "okb", "CRO" => "crypto-com-chain", "KAIA" => "kaia",
+        "OKB" => "okb", "CRO" => "crypto-com-chain", "KAIA" => "kaia", "TON" => "the-open-network",
         "USDC" | "USDC.e" => "usd-coin", "USDT" | "USDT0" => "tether", "DAI" => "dai", "USDG" => "global-dollar", // EVM tokens: only the core's known list ever asks
         _ => return None,
     }))).collect();

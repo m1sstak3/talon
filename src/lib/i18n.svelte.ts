@@ -275,6 +275,7 @@ const ru = {
   'addr.title': 'Адреса',
   'addr.mine': 'Мои адреса',
   'addr.contacts': 'Контакты',
+  'ton.readOnly': 'В сети TON кошелёк пока показывает балансы и принимает переводы; отправка появится позже. Адрес тот же, что в Trust Wallet для этих слов.',
   'addr.solana': 'Solana',
   'addr.evm': 'Ethereum',
   'addr.nets': 'Работает в сетях: {n}',

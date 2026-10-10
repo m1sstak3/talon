@@ -23,7 +23,7 @@ export interface Card {
 export interface Chain {
   id: string
   name: string
-  kind: 'solana' | 'evm'
+  kind: 'solana' | 'evm' | 'ton'
   symbol: string // native coin
   decimals: number
   test?: boolean
@@ -36,6 +36,7 @@ export interface Chain {
 // its own table of names, coins, tokens and explorers by chain id; these URLs only say where to ask.
 export const chains: Chain[] = [
   { id: 'solana', name: 'Solana', kind: 'solana', symbol: 'SOL', decimals: 9, rpc: '', explorer: 'https://solscan.io' },
+  { id: 'ton', name: 'TON', kind: 'ton', symbol: 'TON', decimals: 9, rpc: '', explorer: 'https://tonviewer.com' }, // read-only for now
   { id: 'ethereum', name: 'Ethereum', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 1, rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io' },
   { id: 'base', name: 'Base', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 8453, rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org' },
   { id: 'arbitrum', name: 'Arbitrum One', kind: 'evm', symbol: 'ETH', decimals: 18, chainId: 42161, rpc: 'https://arb1.arbitrum.io/rpc', explorer: 'https://arbiscan.io' },
@@ -84,12 +85,13 @@ export interface Account {
   name: string
   solana: string
   evm?: string | null
+  ton?: string | null // phrase wallets: the v4R2 wallet Trust Wallet shows for the same words
   wallet?: string // vault wallet id (absent for watch-only)
   index?: number
   watch?: boolean
   ledger?: boolean // the key lives on a Ledger: the device signs, nothing to export
 }
-export const addressFor = (a: Account | undefined, c: Chain) => (!a ? '' : c.kind === 'evm' ? (a.evm ?? '') : a.solana)
+export const addressFor = (a: Account | undefined, c: Chain) => (!a ? '' : c.kind === 'evm' ? (a.evm ?? '') : c.kind === 'ton' ? (a.ton ?? '') : a.solana)
 
 export interface Contact { name: string; address: string }
 export interface Sig { sig: string; time: number | null; ok: boolean }
@@ -207,6 +209,11 @@ export async function readHoldings(address: string, c: Chain): Promise<Holdings>
       })],
     }
   }
+  if (c.kind === 'ton') { // the coin and Tether's USD₮ (the core reads TON Center, spaced to its keyless limit)
+    const w = await invoke<{ nano: string; usdt: string; active: boolean }>('ton_watch', { address })
+    const native = units(w.nano, 9), usdt = units(w.usdt, 6)
+    return { native, partial: false, cards: [nativeCard(native, w.nano), ...(usdt > 0 ? [{ id: TON_USDT, sym: 'USDT', name: 'Tether USD', amount: usdt, raw: w.usdt, decimals: 6, verified: true, usd: 0, tint: '#a8f0de', glyph: 'mono' as const }] : [])] }
+  }
   if (!c.rpc) throw new Error('для этой сети не задан адрес узла')
   // the native coin + the network's known tokens (the core's own list: an unknown contract never shows up as «USDC»)
   const w = await invoke<{ wei: string; tokens: { contract: string; symbol: string; amount: string; decimals: number }[] }>('evm_watch', { rpc: c.rpc, chainId: c.chainId, address })
@@ -217,6 +224,7 @@ export async function readHoldings(address: string, c: Chain): Promise<Holdings>
   }
 }
 
+const TON_USDT = 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs' // Tether's USD₮ jetton master
 const EVM_TOKEN_NAME: Record<string, string> = { USDC: 'USD Coin', 'USDC.e': 'USD Coin (мост)', USDT: 'Tether USD', USDT0: 'Tether USD (USDT0)', DAI: 'Dai', USDG: 'Global Dollar' }
 
 // EVM: one call gives the list and every entry's details (an explorer's index); unsupported networks answer an error
@@ -238,7 +246,7 @@ export async function readPerms(address: string, c: Chain, known: Card[]): Promi
 export const prepareRevoke = (account: string, c: Chain, p: Perm) => cluster(c)
   ? invoke<Draft>('prepare_revoke', { account, cluster: cluster(c), tokenAccount: p.tokenAccount })
   : invoke<Draft>('prepare_revoke', { account, chainId: c.chainId, rpc: c.rpc, token: p.token, spender: p.spender })
-export const openAddress = (address: string, c: Chain) => invoke('open_address', { address, cluster: cluster(c) ?? `evm:${c.chainId}` })
+export const openAddress = (address: string, c: Chain) => invoke('open_address', { address, cluster: c.kind === 'ton' ? 'ton' : cluster(c) ?? `evm:${c.chainId}` })
 export const openTx = (sig: string, c: Chain) => invoke('open_tx', { sig, cluster: cluster(c) ?? `evm:${c.chainId}` })
 // folders (core folders.rs): named groups of account ids, own and watch-only, kept next to the vault
 export interface Folder { id: string; name: string; accounts: string[] }

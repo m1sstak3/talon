@@ -8,11 +8,11 @@ export function install(kind: string) {
   ;(globalThis as any).__cwMock = true // a browser tab has no window: no fake title-bar buttons (owner 08.10 tried to drag it)
   mockWindows('main')
   mockConvertFileSrc('windows') // ?addon=<id>: the tab loads http://addon.localhost/<id> (a test serves the file)
-  const acc = { id: 'demo', name: 'Основной', solana: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', evm: new URLSearchParams(location.search).has('noevm') ? null : '0x52908400098527886E0F7030069857D2E4169EE7', wallet: 'w', index: 0 }
+  const acc = { id: 'demo', name: 'Основной', solana: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', evm: new URLSearchParams(location.search).has('noevm') ? null : '0x52908400098527886E0F7030069857D2E4169EE7', ton: 'UQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-RKY', wallet: 'w', index: 0 }
   // ?accounts=4: more own accounts, for folders and batches
   const extra = Number(new URLSearchParams(location.search).get('accounts') ?? 1) - 1
   const more = ['9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM', 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH', '2wmVCSfPxGPjrnMMn7rchp4uaeoTqN39mXFC2zhPdri9', 'DRpbCBMxVnDK7maPM5tGv6MvB3v1sRMC86PZ8okm21hy']
-  const ext = more.slice(0, Math.max(0, extra)).map((sol, i) => ({ id: `demo${i + 1}`, name: ['Копилка', 'Ферма 1', 'Ферма 2', 'Ферма 3'][i], solana: sol, evm: null, wallet: 'w', index: i + 1 }))
+  const ext = more.slice(0, Math.max(0, extra)).map((sol, i) => ({ id: `demo${i + 1}`, name: ['Копилка', 'Ферма 1', 'Ферма 2', 'Ферма 3'][i], solana: sol, evm: null as string | null, ton: null as string | null, wallet: 'w', index: i + 1 }))
   let accounts = kind === 'welcome' ? [] : [acc, ...ext], unlocked = kind === 'open', open = kind === 'open'
   let folders: unknown[] = JSON.parse(localStorage.getItem('mockFolders') ?? '[]')
   const own: Record<string, string> = {}
@@ -26,6 +26,7 @@ export function install(kind: string) {
     switch (cmd) {
       case 'vault_state': return { accounts, unlocked, open }
       case 'pending_list': return []
+      case 'ton_watch': await wait(300); return { nano: '12500000000', usdt: '42000000', active: true }
       case 'addon_list': { const id = new URLSearchParams(location.search).get('addon'); return id ? [{ id, name: 'Сбор', version: '1.0.0', description: '', permissions: ['accounts', 'balances', 'history', 'transfer'], hosts: [] }] : [] }
       case 'addon_open': return null
       case 'folders_get': return folders

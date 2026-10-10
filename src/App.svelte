@@ -117,7 +117,7 @@
   const valueOf = (c: Card): number | undefined => { const p = !chain.test && showUsd ? prices[priceId(c)] : undefined; return p === undefined ? undefined : p * c.amount }
   $effect(() => {
     if (!cur || chain.test || !showUsd || !coreAvailable()) return
-    const mints = chain.kind === 'solana' ? tokens.map(priceId) : [], coins = chain.kind === 'evm' ? tokens.map(priceId).filter(Boolean) : []
+    const mints = chain.kind === 'solana' ? tokens.map(priceId) : [], coins = chain.kind !== 'solana' ? tokens.map(priceId).filter(Boolean) : []
     const ids = [...mints, ...coins].sort().join(',')
     if (ids === pricedIds && Date.now() - pricedAt < 60_000) return // a minute is fresh enough for a wallet
     pricedIds = ids; pricedAt = Date.now()
@@ -183,6 +183,7 @@
 
   // ---------------------------------------------------------------- hero: every enabled network is a card on the ring
   const NET_LOOK: Record<string, { tint: string; glyph: Card['glyph'] }> = {
+    ton: { tint: '#7cc4ff', glyph: 'mono' },
     solana: { tint: '#b8a6ff', glyph: 'sol' }, ethereum: { tint: '#9fb4ff', glyph: 'eth' }, robinhood: { tint: '#d4f56b', glyph: 'hood' },
     base: { tint: '#7fa8ff', glyph: 'base' }, arbitrum: { tint: '#8fd0ff', glyph: 'mono' }, optimism: { tint: '#ff8f8f', glyph: 'op' },
     polygon: { tint: '#c4a2ff', glyph: 'pol' }, bnb: { tint: '#f3d36b', glyph: 'bnb' }, avalanche: { tint: '#ff9a9a', glyph: 'avax' },
@@ -832,6 +833,7 @@
   let perms = $state<Perm[]>([]), permState = $state(''), permKey = '', revoking = $state(false)
   async function loadPerms() {
     if (!myAddress) return
+    if (chain.kind === 'ton') { perms = []; permState = ''; return } // no spending permissions to read on TON yet
     const key = `${myAddress}|${chain.id}`, c = chain, address = myAddress
     if (key !== permKey) perms = []
     permKey = key; permState = 'loading'
@@ -847,6 +849,7 @@
 
   async function loadHistory() {
     if (!myAddress) return
+    if (chain.kind === 'ton') { histState = t('hist.evmSoon'); return } // TON history: its explorer for now
     if (!cluster(chain)) return loadEvmHistory()
     const address = myAddress, c = chain, key = histKey(address, c)
     histState = ''
@@ -914,7 +917,7 @@
     worldchain: 'ворлд world', berachain: 'берачейн', monad: 'монад', hyperevm: 'хайпер hyperliquid',
     plasma: 'плазма', mantle: 'мантл', sei: 'сей', celo: 'село', flare: 'флэр флер', zksync: 'зксинк zk era', soneium: 'сониум sony',
     ronin: 'ронин axie', megaeth: 'мегаэфир мега', xlayer: 'okx окх иксленер x layer', cronos: 'кронос crypto.com', katana: 'катана',
-    morph: 'морф', arc: 'арк circle', stable: 'стейбл tether', kaia: 'кайя klaytn line', opbnb: 'опбнб бинанс',
+    ton: 'тон тонкоин toncoin telegram телеграм', morph: 'морф', arc: 'арк circle', stable: 'стейбл tether', kaia: 'кайя klaytn line', opbnb: 'опбнб бинанс',
   }
   const hasMoney = (c: Chain) => { const h = holdings[hk(acc, c)]; return !!h && (h.native > 0 || h.cards.some(x => x.verified && x.amount > 0)) }
   const favNets = $derived(chainList.filter(c => !c.test && (fav.includes(c.id) || c.id === chainId)))
@@ -947,7 +950,7 @@
     if (showUsd) {
       const got = list.map(c => [c, holdings[hk(acc, c)]] as const).filter(([, h]) => h)
       const mints = got.filter(([c]) => c.kind === 'solana').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)))
-      const coins = got.filter(([c]) => c.kind === 'evm').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)).filter(Boolean))
+      const coins = got.filter(([c]) => c.kind !== 'solana').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)).filter(Boolean))
       await usdPrices([...new Set(mints)], [...new Set(coins)]).then(p => (prices = { ...prices, ...p }), () => {})
     }
     checking = ''
@@ -1171,7 +1174,7 @@
       {/key}
       {#if !chain.test && showUsd}<p class="usd faint appear" style="--d:100ms">{#if usdTotal}≈ {usd(usdTotal.sum)}{#if usdTotal.missing}{' · '}{t('usd.missing', { n: usdTotal.missing })}{/if}{/if}</p>{/if}
       <div class="acts money appear" style="--d:140ms">
-        <button class="btn solid" onclick={() => send()} disabled={!tokens.length || !!acc?.watch}><Icon name="send" />{t('act.send')}</button>
+        {#if chain.kind !== 'ton'}<button class="btn solid" onclick={() => send()} disabled={!tokens.length || !!acc?.watch}><Icon name="send" />{t('act.send')}</button>{/if}
         <button class="btn" onclick={receive} disabled={!myAddress}><Icon name="receive" />{t('act.receive')}</button>
         {#if canSwap && !acc?.watch}<button class="btn" onclick={() => openSwap()} disabled={!tokens.length}><Icon name="swap" />{t('act.swap')}</button>{/if}
       </div>
@@ -1206,6 +1209,7 @@
       </ul>
       {#if hiddenCount}<button class="tag hid" onclick={() => (showHidden = !showHidden)}>{showHidden ? t('tok.hideHidden') : t('tok.showHidden', { n: hiddenCount })}</button>{/if}
       {#if cur?.partial}<p class="note">{t('watch.partial')}</p>{/if}
+      {#if chain.kind === 'ton'}<p class="note">{t('ton.readOnly')}</p>{/if}
 
     {:else if view === 'token' && card}
       <div class="hole s" aria-hidden="true"></div>
@@ -1216,7 +1220,7 @@
         <p class="amt display num appear" style="--d:140ms">{fmt(card.amount)}<small class="unit">{card.sym}</small></p>
         {#if !chain.test && showUsd}<p class="usd faint appear" style="--d:170ms">{#if valueOf(card) !== undefined}≈ {usd(valueOf(card)!)} · 1 {card.sym} = {usd(prices[priceId(card)])}{/if}</p>{/if}
         <div class="acts money appear" style="--d:240ms">
-          {#if !acc?.watch}<button class="btn solid" onclick={() => send()}><Icon name="send" />{t('act.send')}</button>{/if}
+          {#if !acc?.watch && chain.kind !== 'ton'}<button class="btn solid" onclick={() => send()}><Icon name="send" />{t('act.send')}</button>{/if}
           <button class="btn" onclick={receive}><Icon name="receive" />{t('act.receive')}</button>
           {#if canSwap && !acc?.watch}<button class="btn" onclick={() => openSwap(idOf(card))}><Icon name="swap" />{t('act.swap')}</button>{/if}
         </div>
@@ -1413,7 +1417,7 @@
           </ul>
         {/if}
       {:else if addrTab === 'mine'}
-        {#each [{ k: 'solana', title: t('addr.solana'), a: acc?.solana ?? '', nets: chainList.filter(c => c.kind === 'solana' && (showTest || !c.test)) }, { k: 'evm', title: t('addr.evm'), a: acc?.evm ?? '', nets: chainList.filter(c => c.kind === 'evm' && (showTest || !c.test)) }].filter(g => g.a) as g, gi (g.k)}
+        {#each [{ k: 'solana', title: t('addr.solana'), a: acc?.solana ?? '', nets: chainList.filter(c => c.kind === 'solana' && (showTest || !c.test)) }, { k: 'evm', title: t('addr.evm'), a: acc?.evm ?? '', nets: chainList.filter(c => c.kind === 'evm' && (showTest || !c.test)) }, { k: 'ton', title: 'TON', a: acc?.ton ?? '', nets: chainList.filter(c => c.kind === 'ton') }].filter(g => g.a) as g, gi (g.k)}
           <section class="mine appear" style="--d:{80 + gi * 80}ms">
             <h3 class="fam">{g.title}</h3>
             <!-- the address itself is the biggest copy target; groups of four for reading, the raw string goes to the clipboard -->
