@@ -32,7 +32,7 @@ exact tag:
 | `id` | 2–32 chars: `a-z`, `0-9`, `-`. Installing a file with the same id updates that add-on. |
 | `name` | 1–24 chars. It is the tab's title. |
 | `version`, `description` | Shown in Settings and before install. |
-| `permissions` | Any of `accounts`, `balances`, `keys` (below). Empty = a tab that sees nothing of the wallet. |
+| `permissions` | Any of `accounts`, `balances`, `history`, `keys`, `transfer` (below). Empty = a tab that sees nothing of the wallet. |
 | `hosts` | Up to 8 `https://name.domain[:port]` origins your page may `fetch`. Empty = no network at all. |
 
 ## Install
@@ -73,17 +73,20 @@ const talon = (() => {
 | `talon('accounts')` | `accounts` | `[{ name, solana, evm }]`: the owner's accounts (watch-only ones are not included) |
 | `talon('balances', { addresses })` | `balances` | `{ network, rows: [{ address, sol, tokens: [{ mint, symbol, amount }] }] }` for up to 50 Solana addresses, on the Solana network chosen in the wallet (mainnet otherwise). `symbol` is set only for known tokens; `sol` is `null` if the node did not answer. |
 | `talon('open', { address })` | `accounts` | Shows that account of the owner in the wallet; `false` if it is not theirs. |
+| `talon('folders')` | `accounts` | `[{ name, accounts: [{ name, solana, evm }] }]`: the owner's folders with their own accounts (watch-only addresses left out). |
+| `talon('history', { address, limit })` | `history` | `{ network, rows: [{ sig, time, ok, fee, peer, moves: [{ mint, amount, decimals, incoming }] }] }`: the latest 1–20 operations of a Solana address (default 10), on the wallet's Solana network. Amounts in base units. |
+| `talon('requestTransfer', { to, sources: [{ address, amount }] })` | `transfer` | Proposes SOL transfers from 1–50 of the owner's own accounts (by Solana address) to one address; `amount` is `"0.5"` or `"max"`. The wallet builds a fixed plan and opens its own confirmation window with your add-on's name; the owner confirms with the password or rejects. Resolves `{ confirmed: true }` or `{ confirmed: false }`. Ledger accounts cannot be sources. |
 | `talon('addKeys', { items: [{ name, key }] })` | `keys` | Offers Solana private keys (base58, 64 bytes, as Phantom exports) as new accounts. The wallet opens its own window with the addresses and asks the owner's password; resolves `{ added: true }` or `{ added: false }` if cancelled. Keys already in the wallet are skipped. |
 
 Events: `talon:accounts` fires when the owner's accounts change (redraw your list).
 
-Limits: 240 calls a minute, one `balances` and one key offer at a time, 1–50 keys per offer (128 chars each),
+Limits: 240 calls a minute, one `balances` / `history` read, one key offer and one transfer proposal at a time, 1–50 keys per offer (128 chars each),
 64 KB per message, 2 MB per file. `balances` is asked through the wallet's own Solana node, so the addresses you pass
 reach that node even when your `hosts` is empty.
 
 ## What an add-on can never do
 
-See or export the keys or words of accounts already in the wallet, sign anything, see the wallet password (it is
+See or export the keys or words of accounts already in the wallet, sign anything or send without the owner's confirmation, see the wallet password (it is
 typed only in the wallet's own window, never in your tab), read other add-ons, or reach the network beyond its `hosts`.
 
 A key offer is the one strong permission: the add-on knows the keys it hands over, so whatever lands on those
@@ -91,5 +94,11 @@ accounts is as safe as the add-on. Talon says so in the install screen and in th
 
 ## Moving money
 
-Add-ons do not send. To move funds from several accounts at once, ask an agent (see [`agent/SKILL.md`](../agent/SKILL.md)):
-it requests a batch, and you confirm it in the wallet with your password.
+An add-on never sends by itself. With the `transfer` permission it may **propose** a batch (`requestTransfer`): the
+wallet checks the sources are the owner's, prices and dry-runs every transfer, and shows the plan in its own window
+under your add-on's name — destination, every account, amounts, fees. Nothing your page says reaches that window. The
+owner confirms with the password, or rejects; what is signed is exactly the plan shown, and one plan waits at a time
+(an agent's request, a folder's «Перевести со всех» and add-on proposals share that slot). Solana SOL only for now.
+
+The owner can do the same by hand (a folder's «Перевести со всех») or through an AI assistant (see
+[`agent/SKILL.md`](../agent/SKILL.md)).

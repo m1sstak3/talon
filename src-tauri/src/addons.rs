@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use tauri::AppHandle;
 
 /// what an add-on may ask for; each is shown to the owner by name before install
-pub const PERMS: [&str; 3] = ["accounts", "balances", "keys"];
+pub const PERMS: [&str; 5] = ["accounts", "balances", "history", "keys", "transfer"];
 const TAG: &str = r#"<script type="application/json" id="talon-addon">"#;
 const MAX_HTML: usize = 2 << 20;
 
@@ -136,6 +136,7 @@ mod tests {
     fn manifest_checks() {
         let ok = parse(&file(r#"{"id":"extract","name":"Extract","version":"1.0.0","permissions":["accounts","keys"],"hosts":["https://api.example.com"]}"#)).unwrap();
         assert_eq!((ok.id.as_str(), ok.permissions.len()), ("extract", 2));
+        assert!(parse(&file(r#"{"id":"sweep","name":"Сбор","version":"1.0.0","permissions":["history","transfer"]}"#)).is_ok(), "v2 permissions");
         assert_eq!(csp(&ok).split("connect-src ").nth(1).unwrap().split(';').next(), Some("https://api.example.com"));
         assert!(csp(&Manifest { hosts: vec![], ..ok.clone() }).contains("connect-src 'none'"));
         assert!(parse("<p>no manifest</p>").is_err());

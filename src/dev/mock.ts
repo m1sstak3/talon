@@ -1,12 +1,13 @@
 // Dev only (?mock=welcome|locked|open): a fake core so the intro and the sheet can be checked in a browser tab without
 // touching a real vault. Never bundled: main.ts imports it behind import.meta.env.DEV. Demo password: «demo-pass».
-import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
+import { mockIPC, mockWindows, mockConvertFileSrc } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 
 export function install(kind: string) {
   ;(globalThis as any).isTauri = true
   ;(globalThis as any).__cwMock = true // a browser tab has no window: no fake title-bar buttons (owner 08.10 tried to drag it)
   mockWindows('main')
+  mockConvertFileSrc('windows') // ?addon=<id>: the tab loads http://addon.localhost/<id> (a test serves the file)
   const acc = { id: 'demo', name: 'Основной', solana: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', evm: new URLSearchParams(location.search).has('noevm') ? null : '0x52908400098527886E0F7030069857D2E4169EE7', wallet: 'w', index: 0 }
   // ?accounts=4: more own accounts, for folders and batches
   const extra = Number(new URLSearchParams(location.search).get('accounts') ?? 1) - 1
@@ -25,9 +26,11 @@ export function install(kind: string) {
     switch (cmd) {
       case 'vault_state': return { accounts, unlocked, open }
       case 'pending_list': return []
+      case 'addon_list': { const id = new URLSearchParams(location.search).get('addon'); return id ? [{ id, name: 'Сбор', version: '1.0.0', description: '', permissions: ['accounts', 'balances', 'history', 'transfer'], hosts: [] }] : [] }
+      case 'addon_open': return null
       case 'folders_get': return folders
       case 'folders_set': folders = a.list; localStorage.setItem('mockFolders', JSON.stringify(folders)); return null
-      case 'batch_plan': await wait(700); return waiting = { id: 'b2', by: 'owner', network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
+      case 'batch_plan': await wait(700); return waiting = { id: 'b2', by: a.addon ? 'addon' : 'owner', byName: a.addon ? 'Сбор' : undefined, network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
         total: (a.sources.length * 0.4).toFixed(6), fees: (a.sources.length * 0.000005).toFixed(6),
         rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.solana ?? '', balance: '0.400005', amount: '0.4', fee: '0.000005', left: '0' })) }
       case 'sol_history': await wait(400); return [1, 2, 3].map(i => ({ sig: `demoSig${i}`.padEnd(88, String(i)), time: 1791400000 - i * 86400, ok: true }))

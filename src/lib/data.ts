@@ -245,7 +245,7 @@ export interface Folder { id: string; name: string; accounts: string[] }
 export const foldersGet = () => invoke<Folder[]>('folders_get')
 export const foldersSet = (list: Folder[]) => invoke<void>('folders_set', { list })
 // a batch the owner makes by hand: the same immutable plan and confirmation sheet as an agent's request
-export const batchPlan = (network: string, to: string, sources: { account: string; amount: string }[]) => invoke<Batch>('batch_plan', { network, to, sources })
+export const batchPlan = (network: string, to: string, sources: { account: string; amount: string }[], addon?: string) => invoke<Batch>('batch_plan', { network, to, sources, addon })
 export const usdPrices = (mints: string[], coins: string[]) => invoke<Record<string, number>>('usd_prices', { mints, coins })
 // swap (Solana mainnet): a live quote, then the core builds, checks and dry-runs the exact transaction
 export interface SwapQuote { in_amount: string; out_amount: string; min_out: string; out_decimals: number; impact: string; route: string; fee_bps: number }

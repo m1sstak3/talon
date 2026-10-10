@@ -19,7 +19,7 @@ pub const TTL: Duration = Duration::from_secs(600); // a plan not confirmed in 1
 pub struct Row { pub account: String, pub name: String, pub from: String, pub balance: u64, pub amount: u64, pub fee: u64 }
 /// an immutable plan: the password confirms exactly this (destination, rows, price); any change = a new request
 #[derive(Clone)]
-pub struct Plan { pub id: String, pub cluster: Cluster, pub to: String, pub new_recipient: bool, pub price: u64, pub rows: Vec<Row>, pub at: Instant, pub owner: bool } // owner: made by hand (a folder), not by an agent
+pub struct Plan { pub id: String, pub cluster: Cluster, pub to: String, pub new_recipient: bool, pub price: u64, pub rows: Vec<Row>, pub at: Instant, pub owner: bool, pub addon: Option<String> } // owner: made by hand (a folder); addon: proposed by that add-on
 /// what became of one row after the owner confirmed
 #[derive(Clone)]
 pub struct Done { pub account: String, pub sig: Option<String>, pub error: Option<String> }
@@ -57,7 +57,7 @@ impl Hub {
 pub struct Source { pub account: String, pub amount: String } // "1.5" SOL or "max"
 
 /// sources -> plan: own accounts only, no duplicates, no self-transfer, each row priced and dry-run by the core
-pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sources: &[Source], id: String, owner: bool) -> Result<Plan, String> {
+pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sources: &[Source], id: String, owner: bool, addon: Option<String>) -> Result<Plan, String> {
     if sources.is_empty() { return Err("нет ни одного счёта-источника".into()) }
     if sources.len() > MAX_SOURCES { return Err(format!("не больше {MAX_SOURCES} счетов в одном запросе")) }
     if !solana::valid_address(to) { return Err("получатель: это не адрес Solana".into()) }
@@ -81,7 +81,7 @@ pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sour
         new_recipient |= d.new_recipient;
         rows.push(Row { account: a.id.clone(), name: a.name.clone(), from: a.solana.clone(), balance: bal, amount, fee });
     }
-    Ok(Plan { id, cluster: c, to: to.into(), new_recipient, price, rows, at: Instant::now(), owner })
+    Ok(Plan { id, cluster: c, to: to.into(), new_recipient, price, rows, at: Instant::now(), owner, addon })
 }
 
 /// the owner confirmed: each row rebuilt now (fresh blockhash) at the plan's amounts and price, signed with one
@@ -114,7 +114,7 @@ pub fn view(p: &Plan, open: bool) -> Value {
     let total: u64 = p.rows.iter().map(|r| r.amount).sum();
     let fees: u64 = p.rows.iter().map(|r| r.fee).sum();
     json!({
-        "id": p.id, "by": if p.owner { "owner" } else { "agent" }, "network": p.cluster.label(), "test": !matches!(p.cluster, Cluster::Mainnet), "to": p.to, "newRecipient": p.new_recipient,
+        "id": p.id, "by": if p.owner { "owner" } else if p.addon.is_some() { "addon" } else { "agent" }, "byName": p.addon, "network": p.cluster.label(), "test": !matches!(p.cluster, Cluster::Mainnet), "to": p.to, "newRecipient": p.new_recipient,
         "open": open, "count": p.rows.len(), "total": u(total), "fees": u(fees), "expires": (TTL.saturating_sub(p.at.elapsed())).as_secs(),
         "rows": p.rows.iter().map(|r| json!({ "name": r.name, "from": r.from, "balance": u(r.balance), "amount": u(r.amount), "fee": u(r.fee), "left": u(r.balance - r.amount - r.fee) })).collect::<Vec<_>>(),
     })
@@ -189,7 +189,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
     if method == "status" {
         let unlocked = st.session.lock().unwrap().unlocked;
         let mut h = st.agent.lock().unwrap();
-        let w = h.live().map(|p| json!({ "id": p.id, "by": if p.owner { "owner" } else { "agent" }, "transfers": p.rows.len() }));
+        let w = h.live().map(|p| json!({ "id": p.id, "by": if p.owner { "owner" } else if p.addon.is_some() { "addon" } else { "agent" }, "transfers": p.rows.len() }));
         return Ok(json!({ "unlocked": unlocked, "waiting": w, "version": env!("CARGO_PKG_VERSION"),
             "can": ["read accounts, folders, balances (Solana and EVM), history", "request SOL transfers from own accounts to one address (the owner confirms)"],
             "cannot": ["sign", "export keys or words", "send tokens or EVM coins yet", "change settings"] }))
@@ -227,7 +227,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
                 if h.live().is_some() { return Err("уже есть запрос, который ждёт подтверждения владельца".into()) }
                 h.admit(Instant::now())?;
             }
-            let plan = plan(&accounts, c, &to, &sources, crate::rand_id(), false).await?;
+            let plan = plan(&accounts, c, &to, &sources, crate::rand_id(), false, None).await?;
             let open = crate::vault::is_open(&crate::vault_path(app)?);
             let v = view(&plan, open);
             {
@@ -290,7 +290,7 @@ mod tests {
         for _ in 0..PER_MIN { h.admit(t).unwrap() }
         assert!(h.admit(t).is_err(), "sixth request in a minute refused");
         assert!(h.admit(t + Duration::from_secs(61)).is_ok(), "window slides");
-        h.waiting = Some(Plan { id: "a".into(), cluster: Cluster::Local, to: String::new(), new_recipient: false, price: 0, rows: vec![], at: t - TTL - Duration::from_secs(1), owner: false });
+        h.waiting = Some(Plan { id: "a".into(), cluster: Cluster::Local, to: String::new(), new_recipient: false, price: 0, rows: vec![], at: t - TTL - Duration::from_secs(1), owner: false, addon: None });
         assert!(h.live().is_none(), "an old plan expires");
         assert!(matches!(h.closed.get("a"), Some((_, Err(_)))));
         assert_eq!(solana::sol_transfer_fee(1_000), 5001);
@@ -324,11 +324,11 @@ mod tests {
             let to = vault::sol_address(&vault::solana_key(&vault::new_phrase(), 0));
             let src = |a: &str, v: &str| Source { account: a.into(), amount: v.into() };
             // refusals: foreign account, duplicate, self as recipient, too many
-            assert!(plan(&accs, c, &to, &[src("nope", "1")], "x".into(), false).await.is_err());
-            assert!(plan(&accs, c, &to, &[src(&accs[0].id, "1"), src(&accs[0].id, "1")], "x".into(), false).await.is_err());
-            assert!(plan(&accs, c, &accs[1].solana, &[src(&accs[1].id, "1")], "x".into(), false).await.is_err());
-            assert!(plan(&accs, c, &to, &vec![src(&accs[0].id, "1"); MAX_SOURCES + 1], "x".into(), false).await.is_err());
-            let pl = plan(&accs, c, &to, &[src(&accs[0].id, "0.5"), src(&accs[1].id, "max"), src(&accs[2].solana, "MAX")], "b1".into(), false).await.unwrap();
+            assert!(plan(&accs, c, &to, &[src("nope", "1")], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, c, &to, &[src(&accs[0].id, "1"), src(&accs[0].id, "1")], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, c, &accs[1].solana, &[src(&accs[1].id, "1")], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, c, &to, &vec![src(&accs[0].id, "1"); MAX_SOURCES + 1], "x".into(), false, None).await.is_err());
+            let pl = plan(&accs, c, &to, &[src(&accs[0].id, "0.5"), src(&accs[1].id, "max"), src(&accs[2].solana, "MAX")], "b1".into(), false, None).await.unwrap();
             let v = view(&pl, false);
             assert_eq!((v["count"].as_u64(), v["newRecipient"].as_bool()), (Some(3), Some(true)));
             assert_eq!(v["rows"][1]["left"], "0");

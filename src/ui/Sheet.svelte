@@ -14,7 +14,8 @@
     id: string; network: string; test: boolean; to: string; newRecipient: boolean; open: boolean; count: number; total: string; fees: string
     rows: { name: string; from: string; balance: string; amount: string; fee: string; left: string }[]
     known?: boolean // the destination is one of the owner's accounts or contacts (set by the app)
-    by?: 'owner' | 'agent' // who made the plan: a folder's «Перевести со всех» or an agent's request
+    by?: 'owner' | 'agent' | 'addon' // who made the plan: a folder's «Перевести со всех», an agent, or an add-on (byName)
+    byName?: string
   }
   // keys an add-on hands over (bridge «addKeys»): the sheet shows what they open and asks the wallet password
   export interface Offer { addon: string; addonName: string; items: { name: string; key: string }[] }
@@ -286,11 +287,11 @@
   const ru = (n: string) => n.replace('.', ',') // the core writes 1.5; the screen says 1,5
   const plural = (n: number) => n % 10 === 1 && n % 100 !== 11 ? 'перевод' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'перевода' : 'переводов'
   const shortA = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`
-  const titles: Record<Step, string> = {
+  const titles: Record<Step, string> = $derived({ // derived: the sheet's props are read where they are used
     start: 'С чего начнём?', reveal: 'Экспорт ключей', keys: 'Ключи счёта', words: 'Запишите 12 слов', check: 'Проверим запись', secret: 'Импорт кошелька',
     save: fresh ? 'Название и пароль' : 'Название', name: 'Новый счёт', evm: 'Ключ Ethereum', ledger: 'Подключить Ledger', pass: open ? 'Поставить пароль' : 'Пароль кошелька',
-    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: batch?.by === 'owner' ? 'Перевод со всех' : 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть', bio: 'Вход по отпечатку',
-  }
+    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: batch?.by === 'owner' ? 'Перевод со всех' : batch?.by === 'addon' ? `Запрос «${batch.byName}»` : 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть', bio: 'Вход по отпечатку',
+  })
 </script>
 
 <svelte:window bind:innerHeight={vh} />
@@ -501,7 +502,7 @@
               <li><span><b>{r.name}</b><small class="mono">{shortA(r.from)}</small></span><span class="num">−{ru(r.amount)}<small>останется {ru(r.left)}</small></span></li>
             {/each}
           </ol>
-          <p class="hint">Подписано будет ровно это{batch.by === 'owner' ? '' : ': агент не может поменять суммы или адрес'}.</p>
+          <p class="hint">Подписано будет ровно это{batch.by === 'owner' ? '' : batch.by === 'addon' ? `: дополнение «${batch.byName}» не может поменять суммы или адрес` : ': агент не может поменять суммы или адрес'}.</p>
           {#if !batch.open}<label><span class="label">Пароль кошелька</span><span class="field"><input type="password" bind:value={p1} autocomplete="current-password" disabled={!ready} /></span></label>{/if}
           <div class="acts">
             <button class="btn" type="button" onclick={rejectBatch} disabled={busy}>Отклонить</button>

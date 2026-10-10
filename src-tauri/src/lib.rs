@@ -786,7 +786,7 @@ fn agent_switch(app: &AppHandle, on: bool) -> Result<(), String> {
         { h.server = Some(agent::start(app.clone(), file)); }
     } else {
         let _ = std::fs::remove_file(&flag);
-        if h.waiting.as_ref().is_some_and(|p| !p.owner) { let p = h.waiting.take().unwrap(); h.close(&p.id, p.cluster, Err("доступ агента выключен".into())) } // the owner's own batch stays
+        if h.waiting.as_ref().is_some_and(|p| !p.owner && p.addon.is_none()) { let p = h.waiting.take().unwrap(); h.close(&p.id, p.cluster, Err("доступ агента выключен".into())) } // the owner's and add-ons' batches stay
     }
     Ok(())
 }
@@ -818,10 +818,15 @@ fn folders_set(app: AppHandle, list: Vec<folders::Folder>) -> Result<(), String>
     if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
     vault::durable(&f, &serde_json::to_string(&list).map_err(|e| e.to_string())?)
 }
-/// a batch the owner makes by hand (a folder's «Перевести со всех»): the same immutable plan, sheet and one password as an
-/// agent's request; no agent switch needed. One batch waits at a time, whoever made it
+/// a batch the owner makes by hand (a folder's «Перевести со всех») or an add-on proposes (its «transfer» permission,
+/// re-checked here): the same immutable plan, sheet and one password as an agent's request; no agent switch needed.
+/// One batch waits at a time, whoever made it
 #[tauri::command]
-async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: String, to: String, sources: Vec<agent::Source>) -> Result<serde_json::Value, String> {
+async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: String, to: String, sources: Vec<agent::Source>, addon: Option<String>) -> Result<serde_json::Value, String> {
+    let by = match addon {
+        Some(id) => { addons::granted(&app, &id, "transfer")?; Some(addons::list(&app)?.into_iter().find(|a| a.m.id == id).map(|a| a.m.name).unwrap_or(id)) }
+        None => None,
+    };
     let accounts = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } s.accounts.clone() };
     let c = solana::Cluster::parse(&network)?;
     #[cfg(not(debug_assertions))]
@@ -830,7 +835,7 @@ async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: Strin
     if matches!(c, solana::Cluster::Local) && std::env::var("CW_VAULT").is_err() { return Err("локальная сеть: только с одноразовым хранилищем".into()) }
     let busy = || "ждёт подтверждения другой пакет переводов: сначала решите его".to_string();
     if state.agent.lock().unwrap().live().is_some() { return Err(busy()) }
-    let plan = agent::plan(&accounts, c, to.trim(), &sources, rand_id(), true).await?;
+    let plan = agent::plan(&accounts, c, to.trim(), &sources, rand_id(), by.is_none(), by).await?;
     let v = agent::view(&plan, vault::is_open(&vault_path(&app)?));
     let mut h = state.agent.lock().unwrap();
     if h.live().is_some() { return Err(busy()) }

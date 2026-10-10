@@ -334,7 +334,7 @@
   }
   // one call at a time per kind is enough for a panel; a flood is dropped, not queued
   let bridgeCalls = 0, bridgeMinute = 0, reading = false
-  let keyOffer: ((r: { added: boolean }) => void) | null = null
+  let keyOffer: ((r: { added: boolean }) => void) | null = null, transferOffer: ((r: { confirmed: boolean }) => void) | null = null
   const solChain = () => (chain.kind === 'solana' ? chain : chainList.find(c => c.id === 'solana')!)
   async function bridge(method: string, p: Record<string, unknown>, a: Addon): Promise<unknown> {
     const may = (perm: string) => { if (!a.permissions.includes(perm)) throw new Error(`no permission: ${perm}`) }
@@ -361,6 +361,38 @@
         if (chain.kind !== 'solana') setChain('solana')
         setAccount(x.id); go('home')
         return true
+      }
+      case 'folders': { // the owner's folders with their own accounts (watch-only ids stay out, like in «accounts»)
+        may('accounts')
+        return folders.map(f => ({ name: f.name, accounts: vaultAccounts.filter(x => f.accounts.includes(x.id)).map(x => ({ name: x.name, solana: x.solana, evm: x.evm ?? null })) }))
+      }
+      case 'history': { // the latest operations of a Solana address on the wallet's Solana network
+        may('history')
+        if (reading) throw new Error('busy: one read at a time')
+        const address = typeof p.address === 'string' && isAddress(p.address) ? p.address : ''
+        if (!address) throw new Error('address: a Solana address')
+        const n = Math.min(Math.max(Number(p.limit) || 10, 1), 20), c = solChain()
+        reading = true
+        try {
+          const sigs = (await readHistory(address, c)).slice(0, n)
+          return { network: c.name, rows: await Promise.all(sigs.map(s => readTx(s.sig, address, c).then(x => ({ sig: x.sig, time: x.time, ok: x.ok, fee: x.fee, peer: x.peer, moves: x.moves }), () => ({ sig: s.sig, time: s.time, ok: s.ok })))) }
+        } finally { reading = false }
+      }
+      case 'requestTransfer': { // a proposal: the wallet's own sheet shows the plan with the add-on's name; the owner confirms or not
+        may('transfer')
+        const to = typeof p.to === 'string' ? p.to.trim() : ''
+        const src = Array.isArray(p.sources) ? p.sources : []
+        if (!isAddress(to)) throw new Error('to: a Solana address')
+        if (!src.length || src.length > 50) throw new Error('sources: 1..50 of { address, amount }')
+        const sources = src.map(s => {
+          const own = vaultAccounts.find(x => s && x.solana === s.address && !x.ledger)
+          if (!own || typeof s.amount !== 'string' || !/^(max|\d+(\.\d+)?)$/i.test(s.amount.trim())) throw new Error(`source ${String(s?.address).slice(0, 12)}: not an own account, or amount is not "1.5" / "max"`)
+          return { account: own.id, amount: s.amount.trim() }
+        })
+        if (sheet || transferOffer || view === 'locked') throw new Error('busy')
+        const b = await batchPlan(cluster(solChain())!, to, sources, a.id)
+        showBatch(b)
+        return new Promise(r => (transferOffer = r))
       }
       case 'addKeys': {
         may('keys')
@@ -392,7 +424,10 @@
   function sheetClosed(done: boolean) {
     const m = sheet?.mode, wasSwap = !!sheet?.draft?.swap, wasFee = !!feeInfo && sheet?.draft?.to === feeInfo.owner
     if (m === 'addon-keys') { keyOffer?.({ added: done }); keyOffer = null; if (done) flash(t('addon.added'), undefined, true) }
-    if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
+    // an add-on's proposal is answered once: closing the window without confirming rejects it in the core too, so the
+    // add-on is never told «no» while the plan could still be confirmed later
+    if (m === 'batch' && transferOffer) { if (!done && agentReq) invoke('batch_reject', { id: agentReq.id }).catch(() => {}); transferOffer({ confirmed: done }); transferOffer = null; agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
+    else if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
     sheet = null
     hero?.rest(away) // a phone tab without the card keeps the scene asleep
     if (enterAfterSheet) { enterAfterSheet = false; enter() }
@@ -1137,7 +1172,7 @@
         {#if canSwap && !acc?.watch}<button class="btn" onclick={() => openSwap()} disabled={!tokens.length}><Icon name="swap" />{t('act.swap')}</button>{/if}
       </div>
       {#if agentReq && !sheet}
-        <button class="agentbar appear" style="--d:160ms" onclick={() => agentReq && showBatch(agentReq)}>{t(agentReq.by === 'owner' ? 'fold.waiting' : 'agent.waiting', { n: agentReq.count })}<span>{t('agent.open')}</span></button>
+        <button class="agentbar appear" style="--d:160ms" onclick={() => agentReq && showBatch(agentReq)}>{agentReq.by === 'addon' ? t('addon.waiting', { name: agentReq.byName ?? '', n: agentReq.count }) : t(agentReq.by === 'owner' ? 'fold.waiting' : 'agent.waiting', { n: agentReq.count })}<span>{t('agent.open')}</span></button>
       {/if}
       {#if unresolved.length || pendingErr}
         <div class="unres appear" style="--d:180ms" role="status">
@@ -1513,7 +1548,7 @@
           <div class="addon-ask panel" transition:slide={{ duration: still() ? 0 : 220 }}>
             <p><b>{m.name}</b> <span class="faint">{m.version}</span>{#if m.description}<br /><span class="muted">{m.description}</span>{/if}</p>
             <p class="muted small">{m.permissions.length ? t('addon.asks') : t('addon.asksNothing')}</p>
-            {#if m.permissions.length}<ul class="small">{#each m.permissions as p}<li class:warn={p === 'keys'}>{t(`addon.perm.${p}` as Parameters<typeof t>[0])}</li>{/each}</ul>{/if}
+            {#if m.permissions.length}<ul class="small">{#each m.permissions as p}<li class:warn={p === 'keys' || p === 'transfer'}>{t(`addon.perm.${p}` as Parameters<typeof t>[0])}</li>{/each}</ul>{/if}
             {#if m.hosts.length}<p class="small muted">{t('addon.hosts', { h: m.hosts.map(h => h.replace('https://', '')).join(', ') })}</p>{/if}
             <p class="faint small">{t('addon.trust')}</p>
             <div class="two"><button class="btn small" onclick={() => (addonFile = null)}>{t('addon.cancel')}</button>
