@@ -267,6 +267,7 @@ pub fn units(v: u64, decimals: u32) -> String {
 }
 
 /// one transfer (SOL or a token), built and priced by the core. `message` is exactly what gets signed and sent.
+#[derive(Clone)]
 pub struct Draft {
     pub from: String,
     pub to: String,
@@ -467,6 +468,41 @@ async fn seal(http: &reqwest::Client, d: &mut Draft, payer: &solana_address::Add
         Err(_) => if d.warn.is_none() { d.warn = Some("Сеть не смогла проверить перевод заранее: он может не пройти.") },
     }
     Ok(())
+}
+/// the planned transaction with a fresh blockhash (a batch row waits for the owner's reading): byte for byte the same
+/// message except its 32 blockhash bytes; the network fee must not move, the balance must still cover it, the dry run
+/// must still pass (design review 11.10: never rebuild — the recipient's account or the price could change)
+pub async fn refresh(d: &Draft) -> Result<Draft, String> {
+    let m = &d.message;
+    if m.len() < 4 || m[0] & 0x80 != 0 { return Err("неожиданный вид перевода".into()) } // legacy messages only
+    let (mut n, mut i, mut shift) = (0usize, 3usize, 0u32); // compact-u16 count of account keys after the 3-byte header
+    loop {
+        let b = *m.get(i).ok_or("перевод повреждён")?;
+        n |= ((b & 0x7f) as usize) << shift; i += 1;
+        if b & 0x80 == 0 { break }
+        shift += 7; if shift > 14 { return Err("перевод повреждён".into()) }
+    }
+    let at = i + 32 * n;
+    if m.len() < at + 32 { return Err("перевод повреждён".into()) }
+    let (http, c) = (client()?, d.cluster);
+    guard(&http, c).await?;
+    let bh = rpc(&http, c, "getLatestBlockhash", json!([{ "commitment": "confirmed" }])).await?;
+    let hash: solana_hash::Hash = bh["value"]["blockhash"].as_str().and_then(|s| s.parse().ok()).ok_or("bad blockhash answer")?;
+    let mut out = d.clone();
+    out.message[at..at + 32].copy_from_slice(hash.as_ref());
+    out.last_valid = bh["value"]["lastValidBlockHeight"].as_u64().ok_or("bad blockhash answer")?;
+    let fee = value_u64(&rpc(&http, c, "getFeeForMessage", json!([base64::engine::general_purpose::STANDARD.encode(&out.message), { "commitment": "confirmed" }])).await?)?;
+    if fee != d.fee { return Err("комиссия сети изменилась".into()) }
+    let sol_out = if d.mint.is_none() { d.amount } else { d.rent };
+    let bal = value_u64(&rpc(&http, c, "getBalance", json!([d.from, { "commitment": "confirmed" }])).await?)?;
+    if bal < sol_out.saturating_add(fee) { return Err("на счёте уже не хватает SOL".into()) }
+    let wire = [&[1u8][..], &[0u8; 64][..], &out.message[..]].concat();
+    match rpc(&http, c, "simulateTransaction", json!([base64::engine::general_purpose::STANDARD.encode(wire), { "encoding": "base64", "sigVerify": false, "commitment": "confirmed" }])).await {
+        Ok(r) if r["value"]["err"].is_null() => Ok(out),
+        Ok(r) => Err(format!("сеть отклонила бы этот перевод: {}", sim_reason(&r["value"]))),
+        Err(_) if d.warn.is_some() => Ok(out), // the plan already said the node could not check it
+        Err(_) => Err("сеть не смогла проверить перевод сейчас".into()),
+    }
 }
 pub(crate) const COMPUTE_BUDGET: &str = "ComputeBudget111111111111111111111111111111";
 /// the priority price now (micro-lamports per CU), for plans that fix it up front

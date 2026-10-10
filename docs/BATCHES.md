@@ -1,4 +1,4 @@
-# One place for every batch — design (11.10, for review before code)
+# One place for every batch — design (11.10, reviewed; next step)
 
 ## Today (0.5.0)
 
@@ -53,3 +53,22 @@ pub enum Net { Sol(Cluster), Evm { chain_id: u64, rpc: String } }               
 2. The sheet must show exactly what can be signed: totals are the planned amounts; a skipped row is reported after.
 3. `closed` keyed by plan id; EVM status needs the RPC the plan used — stored in `Net`, never taken from the agent.
 4. Token «max» for an agent: the exact balance read at plan time; if it changed by confirm, the row is skipped.
+
+## Review (11.10, second agent) — what changes in the design
+
+- **Never rebuild at confirm.** Keep the plan's exact transaction; refresh only what goes stale: Solana — the 32
+  blockhash bytes (`solana::refresh`, fee must equal, balance and dry run re-checked); EVM — the nonce, with `gas`,
+  `max_fee`, `prio` frozen from the plan (the sheet's hard ceiling is `gas × max_fee`; the L1 part is an estimate
+  shown apart). A moved field skips the row; nothing is re-priced silently.
+- Names only from the core's tables; an unnamed mint is shown in full. Core warnings travel with the plan to the sheet.
+- One row per sender **address**; one EVM confirm at a time; a row whose nonce moved is skipped.
+- Agent / add-on plans: recipient-kind guard (SOL: system-owned or empty; tokens: a wallet, not a token account;
+  EVM: no code, not a listed token), verified mints and core-table networks only, refuse rows whose fee ≥ amount,
+  cap the fee total; for a recipient new on that chain, the owner types the last characters.
+- The owner's own batch must not be locked out by a requester holding the slot (owner preempts).
+- Status for EVM from the core's own trackers, not receipts per poll.
+
+Done now in the existing batches (0.5.x): token rows = planned message + fresh blockhash; warnings on the sheet; unique
+sender addresses; EVM confirms serialized; moved nonce skips a row; native fee ≥ amount refused; tokens to a contract
+warned; unnamed mint in full. Live run on local chains (anvil + solana-test-validator): token, ETH (one row skipped
+after its nonce moved), SOL — balances exact.

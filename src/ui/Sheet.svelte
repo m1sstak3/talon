@@ -15,6 +15,7 @@
     rows: { name: string; from: string; balance?: string; amount: string; fee: string; left?: string }[]
     kind?: 'evm' | 'sol' // a folder batch of an EVM asset or a Solana token: kept in the single-send slot, confirmed by its own call
     sym?: string; feeSym?: string // what moves and what pays the fees (absent: SOL)
+    warn?: string[] // the core's own warnings for any row (a contract recipient, a token its issuer can take back…)
     known?: boolean // the destination is one of the owner's accounts or contacts (set by the app)
     by?: 'owner' | 'agent' | 'addon' // who made the plan: a folder's «Перевести со всех», an agent, or an add-on (byName)
     byName?: string
@@ -498,6 +499,7 @@
             <div><dt>Сеть</dt><dd class:warn={!batch.test}>{batch.network}{batch.test ? ' · тестовые деньги' : ' · настоящие деньги'}</dd></div>
             <div><dt>Комиссии сети</dt><dd class="num">{batch.kind ? 'до ' : ''}{ru(batch.fees)} {batch.feeSym ?? 'SOL'}</dd></div>
           </dl>
+          {#each batch.warn ?? [] as w}<p class="hint warn">{w}</p>{/each}
           {#if !batch.known || batch.newRecipient}<p class="hint warn">{!batch.known ? 'Этого адреса нет среди ваших счетов и контактов. ' : ''}{batch.newRecipient ? 'В сети этот адрес ещё пустой. ' : ''}Сверьте его по буквам: отменить переводы нельзя.</p>{/if}
           <ol class="rows">
             {#each batch.rows as r, i (i)}

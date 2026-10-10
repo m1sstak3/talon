@@ -317,6 +317,7 @@ pub async fn prepare(a: Ask<'_>) -> Result<Draft, String> {
             else { format!("не хватает на сумму и комиссию: можно отправить до {} {native}", units(bal.saturating_sub(d.fee_max), 18)) })
     }
     if is_contract && token.is_none() { d.warn = Some("Получатель — контракт, а не обычный счёт. Отправляйте, только если знаете, что он принимает монеты.".into()) }
+    if is_contract && token.is_some() { d.warn = Some("Получатель — контракт. Токены на контракт, который их не принимает, пропадут: отправляйте, только если знаете, что он их принимает.".into()) }
     if d.custom { d.warn = Some(format!("Сеть добавлена вами (номер сети {}). Название и монету сети кошелёк проверить не может.", a.chain_id)) }
     Ok(d)
 }
@@ -333,6 +334,11 @@ async fn price(http: &reqwest::Client, url: &str, d: &mut Draft, is_contract: bo
     Ok(())
 }
 
+/// the address's next nonce including pending transactions (a batch row whose planned nonce moved is not signed)
+pub async fn pending_nonce(url: &str, address: &str) -> Result<u64, String> {
+    let http = http()?;
+    Ok(hex_u128(&rpc(&http, url, "eth_getTransactionCount", json!([address, "pending"])).await?)? as u64)
+}
 /// the most of the native coin that can leave right now, priced for the real recipient when it is known
 pub async fn max_native(rpc_url: &str, chain_id: u64, from: &str, to: Option<&str>) -> Result<String, String> {
     let to = to.map(str::trim).filter(|t| valid_address(t)).unwrap_or("0x000000000000000000000000000000000000dEaD"); // no recipient yet: an ordinary address
