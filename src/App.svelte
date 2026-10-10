@@ -852,19 +852,20 @@
     if (view !== 'locked') hero?.setDeck(netDeck(), chainId, 'glass', 'update')
   }
   // «Проверить все»: only on the owner's word (no silent sweep of twenty RPCs); four at a time, public nodes throttle bursts
-  let checking = $state(false)
+  let checking = $state(''), checked = 0 // '' idle, else «4 / 19»
   async function checkAll() {
     if (checking || !acc) return
-    checking = true
+    checked = 0
     const list = chainList.filter(c => !c.test && addressFor(acc, c))
-    for (let i = 0; i < list.length; i += 4) await Promise.all(list.slice(i, i + 4).map(c => load(acc, c, true)))
+    checking = `0 / ${list.length}`
+    for (let i = 0; i < list.length; i += 4) await Promise.all(list.slice(i, i + 4).map(c => load(acc, c, true).finally(() => (checking = `${++checked} / ${list.length}`))))
     if (showUsd) {
       const got = list.map(c => [c, holdings[hk(acc, c)]] as const).filter(([, h]) => h)
       const mints = got.filter(([c]) => c.kind === 'solana').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)))
       const coins = got.filter(([c]) => c.kind === 'evm').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)).filter(Boolean))
       await usdPrices([...new Set(mints)], [...new Set(coins)]).then(p => (prices = { ...prices, ...p }), () => {})
     }
-    checking = false
+    checking = ''
   }
   let lastShowTest = false
   $effect(() => { if (showTest !== lastShowTest) { lastShowTest = showTest; if (view !== 'locked') hero?.setDeck(netDeck(), chainId, 'glass', 'update') } })
@@ -989,7 +990,7 @@
               <div class="nhead">
                 <input class="fi" bind:value={netQ} use:focusDesktop placeholder={t('net.search')} aria-label={t('net.search')} spellcheck="false" autocomplete="off"
                   onkeydown={e => e.key === 'Enter' && netFound[0] && setChain(netFound[0].id)} />
-                {#if !netQ.trim()}<button class="tag" onclick={checkAll} disabled={checking}>{checking ? t('net.checking') : t('net.checkAll')}</button>{/if}
+                {#if !netQ.trim()}<button class="tag" onclick={checkAll} disabled={!!checking}>{checking ? t('net.checking', { n: checking }) : t('net.checkAll')}</button>{/if}
               </div>
               {#if netQ.trim()}
                 {#each netFound as c (c.id)}{@render netRow(c)}{:else}<p class="mh">{t('net.none')}</p>{/each}
@@ -1006,7 +1007,6 @@
                   {#each chainList.filter(c => c.test) as c (c.id)}{@render netRow(c)}{/each}
                 {/if}
               {/if}
-              <label class="toggle"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
               <button class="mi add" onclick={() => (addingNet = true)}><Icon name="plus" size={16} />{t('net.add')}</button>
             {:else}
               <form class="netform" onsubmit={addNet} novalidate>
@@ -1586,7 +1586,6 @@
   .star.on { color: var(--ink-3); } /* filled = on the ring; quiet: nine bright stars were the loudest thing in the menu */
   .star.on :global(svg) { fill: currentColor; }
   .mi.add :global(svg) { margin-left: 0; }
-  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; padding: 0 10px 0 36px; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
   .netform { display: grid; gap: 8px; padding: 4px; }
   .fi { min-height: 40px; padding: 0 12px; border: 0; border-radius: var(--r-sm); background: none; box-shadow: inset 0 0 0 1px var(--line); outline: none; font-size: 15px; min-width: 0; }
   .fi:focus { box-shadow: inset 0 0 0 1px var(--line-hi); }

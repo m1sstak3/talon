@@ -36,7 +36,7 @@ const ru = {
   'net.rest': 'Остальные сети: {n}',
   'net.none': 'Такой сети нет. Её можно добавить по адресу RPC',
   'net.checkAll': 'Проверить все',
-  'net.checking': 'Проверяю…',
+  'net.checking': 'Проверяю {n}',
   'net.noAnswer': 'нет ответа',
   'net.star': '{net}: в избранные',
   'net.unstar': '{net}: убрать из избранных',
