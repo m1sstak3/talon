@@ -13,7 +13,8 @@ pub struct Folder { pub id: String, pub name: String, pub accounts: Vec<String> 
 /// the file as the owner left it; none yet = no folders. A broken file is an error, never silently emptied
 pub fn read(file: &Path) -> Result<Vec<Folder>, String> {
     match std::fs::read_to_string(file) {
-        Ok(t) => serde_json::from_str(&t).map_err(|_| "файл папок повреждён".into()),
+        // checked like a save: another process may have written it (an agent finds folders by name)
+        Ok(t) => { let l: Vec<Folder> = serde_json::from_str(&t).map_err(|_| "файл папок повреждён".to_string())?; check(&l)?; Ok(l) }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
         Err(_) => Err("файл папок не читается".into()),
     }
@@ -23,9 +24,11 @@ pub fn read(file: &Path) -> Result<Vec<Folder>, String> {
 pub fn check(list: &[Folder]) -> Result<(), String> {
     if list.len() > MAX_FOLDERS { return Err(format!("не больше {MAX_FOLDERS} папок")) }
     let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
     for f in list {
         let n = f.name.trim().chars().count();
         if n == 0 || n > 40 { return Err("название папки: от 1 до 40 знаков".into()) }
+        if !names.insert(f.name.trim().to_lowercase()) { return Err(format!("папка «{}» уже есть", f.name.trim())) }
         if f.id.is_empty() || f.id.len() > 40 || !ids.insert(&f.id) { return Err("у папок должны быть разные номера".into()) }
         if f.accounts.len() > MAX_MEMBERS { return Err(format!("в папке не больше {MAX_MEMBERS} счетов")) }
         let mut seen = std::collections::HashSet::new();
@@ -44,6 +47,7 @@ mod tests {
         assert!(check(&[f("a", " ", &[])]).is_err(), "empty name");
         assert!(check(&[f("a", "x", &[]), f("a", "y", &[])]).is_err(), "same id twice");
         assert!(check(&[f("a", "x", &["w/0", "w/0"])]).is_err(), "member twice");
+        assert!(check(&[f("a", "Фермы", &[]), f("b", "фермы ", &[])]).is_err(), "same name twice (case, spaces)");
         let dir = std::env::temp_dir().join(format!("talon-folders-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("folders.json");

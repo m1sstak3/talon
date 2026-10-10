@@ -33,7 +33,7 @@ solana-system-interface = { version = "3", features = ["bincode"] }
 solana-hash = "4.7.0"
 solana-message = { version = "5", features = ["wincode"] }
 solana-address = "2.9.0"
-tokio = { version = "1", features = ["time", "net", "io-util"] }
+tokio = { version = "1", features = ["time", "net", "io-util", "sync"] }
 spl-token-2022-interface = "3"
 spl-associated-token-account-interface = "2"
 pubkey3 = { version = "3", package = "solana-pubkey" }

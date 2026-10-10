@@ -13,6 +13,7 @@ use crate::solana::{self, Cluster};
 pub const MAX_SOURCES: usize = 50;
 pub const PER_MIN: usize = 5; // new requests per minute
 pub const TTL: Duration = Duration::from_secs(600); // a plan not confirmed in 10 minutes is gone
+pub const READS_PER_MIN: usize = 30; // reads that reach a node (balances, history, status of a request)
 
 /// one source of a batch: an own account, the exact lamports it sends and the fee it pays at the plan's price
 #[derive(Clone)]
@@ -30,6 +31,7 @@ pub struct Hub {
     pub waiting: Option<Plan>,
     pub closed: HashMap<String, (Cluster, Result<Vec<Done>, String>)>, // id -> results, or why it never ran (rejected, expired, locked)
     recent: VecDeque<Instant>,
+    reads: VecDeque<Instant>,
     #[cfg(windows)]
     pub server: Option<tauri::async_runtime::JoinHandle<()>>,
 }
@@ -43,6 +45,13 @@ impl Hub {
     pub fn close(&mut self, id: &str, c: Cluster, r: Result<Vec<Done>, String>) {
         if self.closed.len() > 50 { self.closed.clear() } // ponytail: forget old outcomes wholesale; agents poll within minutes
         self.closed.insert(id.into(), (c, r));
+    }
+    /// reads that reach a node: a looping agent must not keep the owner's own node rate-limited
+    pub fn admit_read(&mut self, now: Instant) -> Result<(), String> {
+        while self.reads.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) { self.reads.pop_front(); }
+        if self.reads.len() >= READS_PER_MIN { return Err(format!("не больше {READS_PER_MIN} чтений в минуту: подождите")) }
+        self.reads.push_back(now);
+        Ok(())
     }
     /// sliding one-minute window
     pub fn admit(&mut self, now: Instant) -> Result<(), String> {
@@ -132,11 +141,12 @@ pub async fn status(hub: &std::sync::Mutex<Hub>, id: &str) -> Value {
         None => json!({ "id": id, "state": "unknown" }),
         Some((_, Err(why))) => json!({ "id": id, "state": "closed", "reason": why }),
         Some((c, Ok(rows))) => {
-            let mut out = Vec::new();
-            for r in rows {
-                let st = match &r.sig { Some(s) => solana::sig_state(s, c).await, None => "not-sent" };
-                out.push(json!({ "account": r.account, "sig": r.sig, "state": st, "error": r.error }));
-            }
+            let sigs: Vec<String> = rows.iter().filter_map(|r| r.sig.clone()).collect();
+            let mut states = solana::sig_states(&sigs, c).await.into_iter();
+            let out: Vec<Value> = rows.iter().map(|r| {
+                let st = if r.sig.is_some() { states.next().unwrap_or("unknown") } else { "not-sent" };
+                json!({ "account": r.account, "sig": r.sig, "state": st, "error": r.error })
+            }).collect();
             json!({ "id": id, "state": "confirmed", "transfers": out })
         }
     }
@@ -183,13 +193,16 @@ async fn serve(app: tauri::AppHandle, conn: tokio::net::windows::named_pipe::Nam
 /// the methods; anything that signs or exports is simply not here
 pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Value, String> {
     use tauri::{Emitter, Manager};
+    static ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(()); // one agent call at a time, however many pipes
+    let _one = ONE.lock().await;
     let st = app.state::<crate::App>();
     if !st.agent.lock().unwrap().on { return Err("доступ агента выключен в настройках кошелька".into()) }
     // the one call that works while locked: an agent learns why it cannot read yet, and whether a request still waits
     if method == "status" {
         let unlocked = st.session.lock().unwrap().unlocked;
         let mut h = st.agent.lock().unwrap();
-        let w = h.live().map(|p| json!({ "id": p.id, "by": if p.owner { "owner" } else if p.addon.is_some() { "addon" } else { "agent" }, "transfers": p.rows.len() }));
+        // someone else's batch: the agent learns that one waits, never its id (its outcome is not the agent's to read)
+        let w = h.live().map(|p| if p.owner || p.addon.is_some() { json!({ "by": if p.owner { "owner" } else { "addon" }, "transfers": p.rows.len() }) } else { json!({ "id": p.id, "by": "agent", "transfers": p.rows.len() }) });
         return Ok(json!({ "unlocked": unlocked, "waiting": w, "version": env!("CARGO_PKG_VERSION"),
             "can": ["read accounts, folders, balances (Solana and EVM), history", "request SOL transfers from own accounts to one address (the owner confirms)"],
             "cannot": ["sign", "export keys or words", "send tokens or EVM coins yet", "change settings"] }))
@@ -199,9 +212,11 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
         if !s.unlocked { return Err("кошелёк заблокирован: попросите владельца открыть его".into()) }
         s.accounts.clone() // proven at unlock, never the file's unverified header
     };
-    let net = || Cluster::parse(p["network"].as_str().unwrap_or("mainnet"));
+    // the local test chain answers unverified: agents reach it only in development builds
+    let net = || Cluster::parse(p["network"].as_str().unwrap_or("mainnet")).and_then(|c| if matches!(c, Cluster::Local) && !cfg!(debug_assertions) { Err("локальная тестовая сеть только в сборке для разработки".into()) } else { Ok(c) });
+    if matches!(method, "balances" | "evm_balances" | "history" | "request_status") { st.agent.lock().unwrap().admit_read(Instant::now())? }
     match method {
-        "accounts" => Ok(json!(accounts.iter().map(|a| json!({ "id": a.id, "name": a.name, "solana": a.solana, "evm": a.evm })).collect::<Vec<_>>())),
+        "accounts" => Ok(json!(accounts.iter().map(|a| json!({ "id": a.id, "name": a.name, "solana": a.solana, "evm": a.evm, "ton": a.ton })).collect::<Vec<_>>())),
         "balances" => {
             let c = net()?;
             let want = p["account"].as_str();
@@ -213,6 +228,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
             Ok(json!({ "network": c.name(), "accounts": out, "note": "lamports and token amounts are integers in base units" }))
         }
         "request_transfer" => {
+            if p["network"].as_str().is_none() { return Err("network: mainnet (настоящие деньги) или devnet — укажите явно".into()) }
             let c = net()?;
             #[cfg(debug_assertions)]
             if matches!(c, Cluster::Mainnet) { return Err("основная сеть закрыта в сборке для разработки".into()) }
@@ -242,7 +258,9 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
         }
         "request_status" => Ok(status(&st.agent, p["id"].as_str().unwrap_or("")).await),
         // the owner's folders: named groups of account ids (own and watch-only); sources for a request come from here
-        "folders" => Ok(json!(crate::folders::read(&crate::vault_path(app)?.with_file_name("folders.json"))?)),
+        // own accounts only: watch-only addresses in a folder are not the agent's business (nor a destination)
+        "folders" => Ok(json!(crate::folders::read(&crate::vault_path(app)?.with_file_name("folders.json"))?.into_iter()
+            .map(|f| json!({ "id": f.id, "name": f.name, "accounts": f.accounts.into_iter().filter(|id| accounts.iter().any(|a| &a.id == id)).collect::<Vec<_>>() })).collect::<Vec<_>>())),
         "networks" => Ok(json!({ "solana": if cfg!(debug_assertions) { json!(["mainnet", "devnet", "local"]) } else { json!(["mainnet", "devnet"]) }, "evm": crate::evm::networks() })),
         "evm_balances" => {
             let q = p["network"].as_str().ok_or("network: chain id or name of an EVM network (see networks)")?;
@@ -261,7 +279,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
         "history" => {
             let who = p["account"].as_str().ok_or("account: id or address of an own account")?;
             let a = accounts.iter().find(|a| a.id == who || a.solana == who || a.evm.as_deref() == Some(who)).ok_or("такого счёта в кошельке нет")?;
-            let n = p["limit"].as_u64().unwrap_or(10).clamp(1, 20) as usize;
+            let n = p["limit"].as_u64().unwrap_or(10).clamp(1, 10) as usize; // each detail is one node call
             let net = p["network"].as_str().unwrap_or("mainnet");
             if let Ok(c) = Cluster::parse(net) {
                 let mut out = Vec::new();

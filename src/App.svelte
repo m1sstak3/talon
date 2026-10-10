@@ -287,10 +287,12 @@
   // ---------------------------------------------------------------- agent access: a request from an agent waits for the owner
   let agentOn = $state(false), agentReq = $state<Batch | null>(null), agentPaths = $state<{ mcp: string; skill: string } | null>(null)
   $effect(() => { if (agentOn && !agentPaths && coreAvailable()) invoke<{ mcp: string; skill: string }>('agent_paths').then(p => (agentPaths = p), () => {}) })
-  function showBatch(b: Batch) {
-    const known = accountList.some(a => a.solana === b.to) || contactList.some(c => c.address === b.to)
+  // own: an agent's or add-on's plan arriving while the owner prepares a folder batch waits on the home bar (no swap of
+  // sheets under the owner's hand). «Known» = own accounts and contacts: a watched address is somebody else's
+  function showBatch(b: Batch, own = false) {
+    const known = vaultAccounts.some(a => a.solana === b.to) || contactList.some(c => c.address === b.to)
     agentReq = { ...b, known }
-    if (!sheet && view !== 'locked') { menu = ''; sheet = { mode: 'batch', origin: null, batch: agentReq }; hero?.rest(true) }
+    if (!sheet && view !== 'locked' && (own || !bBusy)) { menu = ''; sheet = { mode: 'batch', origin: null, batch: agentReq }; hero?.rest(true) }
   }
   // the swap fee wallet («Комиссия»): its receiving accounts are made once, paid from the current account, owner confirms
   let feeInfo = $state<{ owner: string; missing: number } | null>(null)
@@ -391,7 +393,7 @@
         })
         if (sheet || transferOffer || view === 'locked') throw new Error('busy')
         const b = await batchPlan(cluster(solChain())!, to, sources, a.id)
-        showBatch(b)
+        showBatch(b, true)
         return new Promise(r => (transferOffer = r))
       }
       case 'addKeys': {
@@ -579,7 +581,9 @@
   async function saveFolders(next: Folder[]) { try { await foldersSet(next); folders = next; return true } catch (e) { flash(String(e)); return false } }
   function openFolder(id: string, edit = false) { menu = ''; folderId = id; batchOpen = false; startEdit(edit); swap(() => (view = 'folder')) }
   async function newFolder() {
-    const f: Folder = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: t('fold.newName'), accounts: acc ? [acc.id] : [] }
+    const taken = (n: string) => folders.some(f => f.name.trim().toLowerCase() === n.toLowerCase())
+    let name = t('fold.newName'); for (let i = 2; taken(name); i++) name = `${t('fold.newName')} ${i}` // names are unique (the core checks)
+    const f: Folder = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, accounts: acc ? [acc.id] : [] }
     if (await saveFolders([...folders, f])) openFolder(f.id, true)
   }
   let fName = $state(''), fSel = $state<string[]>([])
@@ -610,7 +614,7 @@
       .map(a => ({ account: a.id, amount: bMode === 'all' ? 'max' : bAmt.trim().replace(',', '.') }))
     if (!sources.length) { flash(t('fold.nothing')); return }
     bBusy = true
-    try { showBatch(await batchPlan(cluster(chain)!, bAddr, sources)) } catch (err) { flash(String(err)) } finally { bBusy = false }
+    try { showBatch(await batchPlan(cluster(chain)!, bAddr, sources), true) } catch (err) { flash(String(err)) } finally { bBusy = false }
   }
   function removeWatch(id: string) {
     watchAccounts = watchAccounts.filter(a => a.id !== id); saveWatch(watchAccounts)

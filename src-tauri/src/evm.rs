@@ -246,10 +246,15 @@ async fn l1_fee(http: &reqwest::Client, url: &str, l1: L1, unsigned: &[u8]) -> R
     let mut d = vec![0x49, 0x94, 0x8e, 0x0e];
     d.extend_from_slice(&word(&[0x20])); d.extend_from_slice(&word(&(tx.len() as u64).to_be_bytes()));
     d.extend_from_slice(&tx); d.resize(d.len() + (32 - tx.len() % 32) % 32, 0);
-    let fee = word_u128(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": hex0x(&d) }, "latest"])).await?.as_str().ok_or("bad answer")?)?;
+    // one 32-byte word or nothing: an empty «0x» (no oracle there) must not read as a zero fee
+    let word = |v: Value| -> Result<u128, String> { let s = v.as_str().filter(|s| s.len() == 66).ok_or("узел сети не ответил о плате за запись в Ethereum")?.to_string(); word_u128(&s) };
+    let fee = word(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": hex0x(&d) }, "latest"])).await?)?;
+    if fee == 0 { return Err("узел сети не назвал плату за запись в Ethereum".into()) }
     if l1 != L1::OpRatio { return Ok(fee) }
-    // Mantle: the oracle prices in ETH, the chain charges MNT = fee x tokenRatio() (checked against a real receipt 11.10)
-    let ratio = word_u128(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": "0x06f837d3" }, "latest"])).await?.as_str().ok_or("bad answer")?)?;
+    // Mantle: the oracle prices in ETH, the chain charges MNT = fee x tokenRatio() (checked against a real receipt 11.10:
+    // ~4400); a node answering a ratio far from that is not believed
+    let ratio = word(rpc(http, url, "eth_call", json!([{ "to": oracle, "data": "0x06f837d3" }, "latest"])).await?)?;
+    if ratio == 0 || ratio > 1_000_000 { return Err("узел сети назвал странный курс платы: попробуйте позже".into()) }
     fee.checked_mul(ratio).ok_or_else(|| "плата сети вышла за пределы".into())
 }
 
@@ -306,7 +311,7 @@ pub async fn prepare(a: Ask<'_>) -> Result<Draft, String> {
         }
         if token.is_none() { d.amount = bal.checked_sub(d.fee_max).filter(|v| *v > 0).ok_or("на счёте не хватает даже на комиссию")?; d.value = d.amount }
     }
-    let need = d.fee_max + d.value;
+    let need = d.fee_max.checked_add(d.value).ok_or("сумма вышла за пределы")?;
     if bal < need {
         return Err(if token.is_some() { format!("не хватает {native} на комиссию: нужно до {}", units(d.fee_max, 18)) }
             else { format!("не хватает на сумму и комиссию: можно отправить до {} {native}", units(bal.saturating_sub(d.fee_max), 18)) })
@@ -324,7 +329,7 @@ async fn price(http: &reqwest::Client, url: &str, d: &mut Draft, is_contract: bo
     let est = hex_u128(&rpc(http, url, "eth_estimateGas", json!([call])).await?)? as u64;
     d.gas = if est == 21_000 && d.data.is_empty() && !is_contract { est } else { est + est / 5 };
     let l1 = l1_fee(http, url, l1, &d.payload()).await?;
-    d.fee_max = d.gas as u128 * d.max_fee + l1 + l1 / 2;
+    d.fee_max = (d.gas as u128).checked_mul(d.max_fee).and_then(|g| g.checked_add(l1)).and_then(|g| g.checked_add(l1 / 2)).ok_or("плата сети вышла за пределы")?;
     Ok(())
 }
 

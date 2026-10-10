@@ -478,15 +478,21 @@ pub async fn balance(address: &str, c: Cluster) -> Result<u64, String> {
     value_u64(&rpc(&http, c, "getBalance", json!([address, { "commitment": "confirmed" }])).await?)
 }
 /// the network's view of a signature right now: "pending" | "confirmed" | "finalized" | "failed" | "unknown"
-pub async fn sig_state(sig: &str, c: Cluster) -> &'static str {
-    let Ok(http) = client() else { return "unknown" };
-    match rpc(&http, c, "getSignatureStatuses", json!([[sig], { "searchTransactionHistory": true }])).await.ok().as_ref().and_then(status) {
+pub async fn sig_state(sig: &str, c: Cluster) -> &'static str { sig_states(&[sig.to_string()], c).await[0] }
+/// the same for up to 256 signatures in ONE call (an agent polling a 50-row batch must not burn the node's limit)
+pub async fn sig_states(sigs: &[String], c: Cluster) -> Vec<&'static str> {
+    let unknown = || vec!["unknown"; sigs.len()];
+    if sigs.is_empty() || sigs.len() > 256 { return unknown() }
+    let Ok(http) = client() else { return unknown() };
+    let Ok(r) = rpc(&http, c, "getSignatureStatuses", json!([sigs, { "searchTransactionHistory": true }])).await else { return unknown() };
+    let Some(a) = r.get("value").and_then(Value::as_array).filter(|a| a.len() == sigs.len()) else { return unknown() };
+    a.iter().map(|one| match status(&json!({ "value": [one] })) {
         Some(Some(s)) if !s.ok => "failed",
         Some(Some(s)) if s.finalized => "finalized",
         Some(Some(s)) if s.confirmed => "confirmed",
         Some(_) => "pending",
         None => "unknown",
-    }
+    }).collect()
 }
 
 /// micro-lamports per compute unit: the 75th percentile of recent non-zero priority fees, 1 000 .. 1 000 000
