@@ -29,7 +29,7 @@
 <style>
   .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; user-select: none; }
   .key {
-    min-height: 56px; border: 0; border-radius: 16px; background: none; color: var(--ink); font: 400 26px var(--font); font-variant-numeric: tabular-nums;
+    min-height: 56px; border: 0; border-radius: 16px; background: none; color: var(--ink); font: 400 28px var(--font); font-variant-numeric: tabular-nums;
     cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; transition: background-color 160ms ease;
   }
   .key:active { background: rgb(238 235 229 / .1); transition-duration: 40ms; }

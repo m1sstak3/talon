@@ -35,6 +35,7 @@
   --font: 'Manrope', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, monospace;
   color-scheme: dark;
+  font-synthesis: none; /* no faux bold or italic: only the loaded weights exist */
 }
 
 * { box-sizing: border-box; }
@@ -62,7 +63,7 @@ input::placeholder { color: var(--ink-3); }
    fading in over 400 ms; nothing loops, nothing moves on its own */
 .btn {
   position: relative;
-  display: inline-flex; align-items: center; gap: 10px;
+  display: inline-flex; align-items: center; gap: 8px;
   min-height: 48px; padding: 0 24px;
   border: 0; border-radius: var(--r-pill);
   background: transparent;
@@ -84,7 +85,7 @@ input::placeholder { color: var(--ink-3); }
 .btn:active { transform: scale(.97); transition-duration: 80ms; }
 .btn.solid { background: var(--ink); color: var(--stage); box-shadow: none; }
 .btn.ember { background: var(--ember); color: var(--ember-ink); box-shadow: none; }
-.btn.small { min-height: 40px; padding: 0 16px; font-size: 14px; }
+.btn.small { min-height: 40px; padding: 0 16px; font-size: 13px; }
 .btn.icon { padding: 0; width: 40px; min-height: 40px; justify-content: center; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .btn svg { width: 18px; height: 18px; flex: none; }
@@ -93,6 +94,7 @@ input::placeholder { color: var(--ink-3); }
   background: var(--metal);
   border-radius: var(--r-panel);
   box-shadow: var(--metal-edge), 0 0 0 1px var(--line), var(--lift);
+  --ink-3: rgb(238 235 229 / .56); /* small faint text on metal: 5.2:1, not 4.4 */
 }
 
 .field {

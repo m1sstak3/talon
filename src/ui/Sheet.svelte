@@ -538,13 +538,13 @@
   }
   .busy .plate::after { opacity: 1; animation: scan 900ms linear infinite; }
   @keyframes scan { from { background-position: -60% 0; } to { background-position: 160% 0; } }
-  .sheet { --max: calc(100vh - var(--top) - 24px); }
+  .sheet { --max: calc(100vh - var(--top) - 24px); --ink-3: rgb(238 235 229 / .56); } /* small faint text on metal: 5.2:1 */
   .body { position: relative; max-height: var(--max); overflow: hidden; clip-path: inset(0 0 calc(100% - min(var(--h), var(--max))) 0 round 20px); transition: clip-path 420ms var(--ease); }
   .body.scroll { overflow-y: auto; scrollbar-width: thin; }
   .inner { position: relative; }
   .cp { justify-self: start; min-height: 30px; padding: 0 12px; border: 0; border-radius: 999px; background: none; color: var(--ink-2); font-size: 13px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); transition: color 160ms ease, box-shadow 160ms ease; }
   .cp:hover { color: var(--ink); box-shadow: inset 0 0 0 1px rgb(238 235 229 / .3); }
-  section { padding: 22px 24px 18px; display: grid; gap: 14px; transform-origin: 50% 0; }
+  section { padding: 24px 24px 16px; display: grid; gap: 16px; transform-origin: 50% 0; }
   header { display: flex; align-items: center; gap: 12px; }
   h2 { flex: 1; margin: 0; font-weight: 400; font-size: 24px; letter-spacing: -.02em; }
   .x { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 999px; background: none; color: var(--ink-3); cursor: pointer; transition: color 300ms ease, background-color 300ms ease; }
@@ -553,10 +553,10 @@
   .x:focus-visible { outline: 1px solid var(--ink-2); outline-offset: 2px; }
   label { display: grid; gap: 6px; }
   .area { padding: 12px 18px; align-items: start; }
-  textarea { flex: 1; min-width: 0; background: none; border: 0; outline: none; resize: none; font-size: 14px; line-height: 1.55; color: var(--ink); }
+  textarea { flex: 1; min-width: 0; background: none; border: 0; outline: none; resize: none; font-size: 15px; line-height: 1.55; color: var(--ink); }
   .field.ok { box-shadow: inset 0 0 0 1px rgb(238 235 229 / .7); }
-  .amount.get { font-size: 32px; opacity: .9; } /* what arrives is a consequence of what leaves: one size down (critique 10.10) */
-  .hint { margin: 0; font-size: 14px; line-height: 1.5; color: var(--ink-2); text-wrap: pretty; }
+  .amount.get { font-size: 28px; opacity: .9; } /* what arrives is a consequence of what leaves: one size down (critique 10.10) */
+  .hint { margin: 0; font-size: 15px; line-height: 22px; color: var(--ink-2); text-wrap: pretty; }
   .picks { display: grid; gap: 4px; }
   .pick { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; padding: 8px 10px; border-radius: 12px; cursor: pointer; transition: background-color 120ms ease; }
   .pick:hover, .pick:has(input:checked) { background: rgb(238 235 229 / .07); }
@@ -567,7 +567,7 @@
   .acts.stack { flex-direction: column; }
   .err { min-height: 18px; margin: -4px 0 0; font-size: 13px; color: var(--ember); transition: opacity 160ms ease; }
   .err:empty { opacity: 0; }
-  .toggle { display: flex; align-items: center; gap: 10px; min-height: 36px; font-size: 14px; color: var(--ink-2); cursor: pointer; }
+  .toggle { display: flex; align-items: center; gap: 10px; min-height: 36px; font-size: 15px; color: var(--ink-2); cursor: pointer; }
   .toggle input { accent-color: var(--ember); width: 16px; height: 16px; }
   .grid3 { display: grid; gap: 12px; }
   .key { display: grid; gap: 6px; }
@@ -584,12 +584,12 @@
   .words .n { font-size: 12px; color: var(--ink-2); min-width: 14px; font-variant-numeric: tabular-nums; }
   @keyframes deal { from { opacity: 0; transform: translateY(12px) rotate(-6deg); } }
 
-  .amount { margin: 2px 0 0; font-size: 44px; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -.03em; line-height: 1; overflow-wrap: anywhere; }
+  .amount { margin: 2px 0 0; font-size: 48px; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -.03em; line-height: 1; overflow-wrap: anywhere; }
   .amount small { font-size: 16px; color: var(--ink-2); margin-left: 8px; letter-spacing: 0; }
   .sum { margin: 0; display: grid; gap: 8px; }
   .sum div { display: grid; grid-template-columns: 128px 1fr; gap: 10px; align-items: baseline; }
   .sum dt { font-size: 13px; color: var(--ink-3); }
-  .sum dd { margin: 0; font-size: 14px; user-select: text; }
+  .sum dd { margin: 0; font-size: 15px; user-select: text; }
   .addr { font-size: 13px; word-break: break-all; line-height: 20px; }
   .faint { color: var(--ink-3); font-size: 12px; }
   .rows { margin: 0; padding: 0; list-style: none; display: grid; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); }
