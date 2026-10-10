@@ -1,3 +1,4 @@
+mod addons;
 mod agent;
 mod clip;
 mod evm;
@@ -289,6 +290,45 @@ async fn secure_add_evm(app: AppHandle, state: tauri::State<'_, App>, account: S
     state.session.lock().unwrap().accounts = accs.clone();
     changed(&app, &accs, true);
     Ok(())
+}
+
+// ---------------------------------------------------------------- add-ons (addons.rs; PLAN «Add-ons»)
+#[tauri::command]
+fn addon_list(app: AppHandle) -> Result<Vec<addons::Installed>, String> { addons::list(&app) }
+/// what the file says about itself, for the owner to read before installing
+#[tauri::command]
+fn addon_inspect(html: String) -> Result<addons::Manifest, String> { addons::parse(&html) }
+#[tauri::command]
+fn addon_install(app: AppHandle, html: String) -> Result<Vec<addons::Installed>, String> { addons::install(&app, &html) }
+#[tauri::command]
+fn addon_remove(app: AppHandle, id: String) -> Result<Vec<addons::Installed>, String> { addons::remove(&app, &id) }
+/// the tab being opened: only this add-on's page is served until another one opens (empty = none)
+#[tauri::command]
+fn addon_open(id: String) { addons::activate(&id) }
+/// the addresses of keys an add-on offers, and which of them the wallet already has (nothing is saved)
+#[tauri::command]
+fn addon_keys_preview(app: AppHandle, addon: String, keys: Vec<Zeroizing<String>>) -> Result<Vec<serde_json::Value>, String> {
+    addons::granted(&app, &addon, "keys")?;
+    if keys.is_empty() || keys.len() > 50 || keys.iter().any(|k| k.len() > 128) { return Err("дополнение передаёт от 1 до 50 ключей".into()) }
+    let have = vault::accounts(&vault_path(&app)?)?;
+    keys.iter().map(|k| {
+        let a = vault::sol_address(&*vault::parse_sol_key(k)?);
+        Ok(serde_json::json!({ "address": a, "have": have.iter().any(|x| x.solana == a) }))
+    }).collect()
+}
+/// keys an add-on hands over become accounts after the owner's password in the wallet's own sheet
+#[tauri::command]
+async fn secure_addon_keys(app: AppHandle, state: tauri::State<'_, App>, addon: String, names: Vec<String>, keys: Vec<Zeroizing<String>>, pass: Zeroizing<String>) -> Result<usize, String> {
+    addons::granted(&app, &addon, "keys")?;
+    protected(&app)?; // the password is typed into the sheet
+    if names.len() != keys.len() || keys.is_empty() || keys.len() > 50 || keys.iter().any(|k| k.len() > 128) { return Err("дополнение передаёт от 1 до 50 ключей".into()) }
+    let items: Vec<(&str, &str)> = names.iter().map(String::as_str).zip(keys.iter().map(|k| k.as_str())).collect();
+    let path = vault_path(&app)?;
+    if !path.exists() { return Err("сначала создайте кошелёк".into()) }
+    let (accs, added) = vault::add_keys(&path, &items, &pass)?;
+    { let mut s = state.session.lock().unwrap(); s.unlocked = true; s.accounts = accs.clone(); }
+    changed(&app, &accs, true);
+    Ok(added)
 }
 
 /// export (owner 08.10: «ключик отсюда забрать»): one account's phrase and private keys, password asked again,
@@ -737,6 +777,15 @@ pub fn run() {
     }));
     b
         .manage(App { session: Mutex::new(Session::default()), agent: Mutex::new(agent::Hub::default()) })
+        // an add-on's page: http://addon.localhost/<id> (Windows, Android) or addon://localhost/<id>; its own CSP
+        .register_uri_scheme_protocol("addon", |ctx, req| {
+            let id = req.uri().path().trim_matches('/');
+            let r = tauri::http::Response::builder().header("X-Content-Type-Options", "nosniff").header("Cache-Control", "no-store");
+            match addons::page(ctx.app_handle(), id) {
+                Some((html, csp)) => r.header("Content-Type", "text/html; charset=utf-8").header("Content-Security-Policy", csp).body(html.into_bytes()),
+                None => r.status(404).header("Content-Type", "text/plain").body(b"no such add-on".to_vec()),
+            }.expect("response")
+        })
         .setup(|app| {
             // sends from a previous run whose outcome was never seen: follow them again
             let h = app.handle().clone();
@@ -749,6 +798,7 @@ pub fn run() {
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
             agent_state, agent_access, batch_reject, batch_confirm, fee_state,
+            addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,
             sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])
         .run(tauri::generate_context!())

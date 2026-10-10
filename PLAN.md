@@ -92,6 +92,16 @@ Mainnet gate (history): ~~durable pending-send record + restart recovery~~; ~~de
 - Limits: message size, calls per minute, one pending proposal, CPU/memory watchdog (a hung frame is unloaded).
 - Uninstall: revoke rights and stop the frame first, then wipe its storage, caches and files.
 - v1 scope: read-only add-ons + panel; proposals in v2 after a security review.
+- Built 10.10 (owner's order 10.10: his team's wallets as a private add-on, a 4th tab): addons.rs, App «addon» view + bridge, Sheet
+  «addon-keys», docs/ADDONS.md, addons/hello.html. Simplified vs the model above: ONE html file with the manifest inside
+  (`<script type="application/json" id="talon-addon">`), picked with a file input, stored as addons/<id>.html + index.json
+  next to the vault, sha256 checked on every load; served by the `addon` URI scheme with the manifest's CSP; every add-on is
+  a tab (no tab permission). Permissions: accounts · balances (any Solana address, ≤50 per call) · keys (offer Solana keys
+  as new accounts: core previews the addresses, the wallet sheet + password adds them; the add-on knows those keys, said
+  at install and on the sheet). Bridge gate is in the app (trusted bundle), `keys` re-checked in the core. Limits: 240
+  calls/min, one key offer at a time, 1..50 keys, 2 MB. Desktop only: Android WebView gives its JS bridge to every frame;
+  on WebView2 the frame's Tauri IPC was tested dead (fetch blocked by CSP, postMessage not delivered; a side-effect call
+  had no effect). Not yet: history, transfer proposals, CPU watchdog.
 
 **EVM sends, permissions, Ledger, history (built 09.10, Codex-reviewed in parts)**
 - evm.rs keeps its own table by chain id (name, coin, known tokens with on-chain-checked addresses, L1 fee kind, explorer):

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Talon",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "identifier": "io.github.m1sstak3.talon",
   "build": {
     "frontendDist": "../dist",
@@ -34,7 +34,7 @@
         "connect-src": "'self' ipc: http://ipc.localhost",
         "object-src": "'none'",
         "base-uri": "'none'",
-        "frame-src": "'none'"
+        "frame-src": "http://addon.localhost addon:"
       },
       "devCsp": {
         "default-src": "'self'",
@@ -45,7 +45,7 @@
         "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1420",
         "object-src": "'none'",
         "base-uri": "'none'",
-        "frame-src": "'none'"
+        "frame-src": "http://addon.localhost addon:"
       }
     }
   },

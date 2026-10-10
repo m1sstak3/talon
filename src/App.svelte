@@ -11,6 +11,7 @@
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
     readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, evmSwapTokens, evmSwapQuote, evmPrepareSwap, EVM_NATIVE, type TokenInfo, type Tx, type SwapQuote,
     prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, savePinned,
+    addonList, addonInspect, addonInstall, addonRemove, type Addon,
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
   import { t, i18n } from './lib/i18n.svelte'
@@ -19,11 +20,11 @@
   import Icon from './ui/Icon.svelte'
   import Qr from './ui/Qr.svelte'
   import WindowBar from './ui/WindowBar.svelte'
-  import Sheet, { type SheetMode, type Draft, type Batch } from './ui/Sheet.svelte'
+  import Sheet, { type SheetMode, type Draft, type Batch, type Offer } from './ui/Sheet.svelte'
   import Intro, { type Kind } from './ui/Intro.svelte'
-  import { invoke } from '@tauri-apps/api/core'
+  import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 
-  type View = 'locked' | 'home' | 'token' | 'receive' | 'send' | 'swap' | 'history' | 'addresses' | 'settings'
+  type View = 'locked' | 'home' | 'token' | 'receive' | 'send' | 'swap' | 'history' | 'addresses' | 'settings' | 'addon'
 
   let canvas: HTMLCanvasElement
   let hero = $state.raw<Hero | null>(null) // raw: the intro writes to hero.birth, a proxy would swallow it
@@ -55,7 +56,7 @@
   let watchAccounts = $state<Account[]>(loadWatch())
   let hasVault = $state(false)
   let vaultOpen = $state(false) // no password: owner's choice, the vault opens by itself
-  let sheet = $state<{ mode: SheetMode; wallet?: string; account?: string; origin: DOMRect | null; round?: number; draft?: Draft; batch?: Batch } | null>(null)
+  let sheet = $state<{ mode: SheetMode; wallet?: string; account?: string; origin: DOMRect | null; round?: number; draft?: Draft; batch?: Batch; offer?: Offer } | null>(null)
   let enterAfterSheet = false
   let sheetEl = $state<ReturnType<typeof Sheet>>()
   // sends whose outcome is unknown (lost reply, crash): listed on the home screen until the network decides
@@ -147,12 +148,13 @@
   }
   const refresh = () => load(acc, chain, true)
 
+  let addons = $state<Addon[]>([]), addonId = $state('') // installed add-ons: a tab each after these
   const NAV = [
     { id: 'home', label: () => t('nav.wallet') },
     { id: 'history', label: () => t('nav.history') },
     { id: 'addresses', label: () => t('nav.addresses') },
   ] as const
-  const navActive = $derived(view === 'history' ? 1 : view === 'addresses' ? 2 : view === 'settings' ? -1 : 0)
+  const navActive = $derived(view === 'history' ? 1 : view === 'addresses' ? 2 : view === 'settings' ? -1 : view === 'addon' ? NAV.length + addons.findIndex(a => a.id === addonId) : 0)
 
   // ---------------------------------------------------------------- hero: every enabled network is a card on the ring
   const NET_LOOK: Record<string, { tint: string; glyph: Card['glyph'] }> = {
@@ -256,8 +258,95 @@
     prepareSend(acc.id, 'fee-setup', '0', 'mainnet').then(d => openSheet('send', { currentTarget: btn } as unknown as Event, undefined, d), err => flash(String(err))).finally(() => (preparing = false))
   }
   function setAgent(on: boolean) { invoke<boolean>('agent_access', { on }).then(v => (agentOn = v), e => flash(String(e))) }
+
+  // ---------------------------------------------------------------- add-ons: a tab each, a sandboxed frame, a message bridge
+  // The frame runs the installed copy (core: addons.rs) on its own origin; it reaches the wallet only through `bridge`,
+  // gated by the permissions shown at install. Keys it offers go through the wallet's own sheet and password.
+  let frameEl = $state<HTMLIFrameElement>()
+  let addonFile = $state<{ html: string; m: Addon } | null>(null), addonErr = $state('')
+  const addonNow = $derived(addons.find(a => a.id === addonId))
+  const addonSrc = (id: string) => convertFileSrc(id, 'addon')
+  // the core serves only the page of the tab being opened (a frame cannot walk into another add-on's page)
+  async function openAddon(id: string) {
+    menu = ''
+    if (view === 'locked' || (view === 'addon' && addonId === id)) return
+    await invoke('addon_open', { id }).catch(() => {})
+    if (view === 'receive') hero?.flip(false)
+    swap(() => { addonId = id; view = 'addon' })
+  }
+  async function pickAddon(e: Event) {
+    const input = e.currentTarget as HTMLInputElement, f = input.files?.[0]
+    input.value = ''; addonErr = ''; addonFile = null
+    if (!f) return
+    try { const html = await f.text(); addonFile = { html, m: await addonInspect(html) } } catch (err) { addonErr = String(err) }
+  }
+  async function installAddon() {
+    if (!addonFile) return
+    try { addons = await addonInstall(addonFile.html); flash(t('addon.installed', { name: addonFile.m.name }), undefined, true); addonFile = null } catch (err) { addonErr = String(err) }
+  }
+  async function removeAddon(id: string) {
+    try { addons = await addonRemove(id); if (addonId === id && view === 'addon') swap(() => (view = 'settings')) } catch (err) { flash(String(err)) }
+  }
+  // one call at a time per kind is enough for a panel; a flood is dropped, not queued
+  let bridgeCalls = 0, bridgeMinute = 0, reading = false
+  let keyOffer: ((r: { added: boolean }) => void) | null = null
+  const solChain = () => (chain.kind === 'solana' ? chain : chainList.find(c => c.id === 'solana')!)
+  async function bridge(method: string, p: Record<string, unknown>, a: Addon): Promise<unknown> {
+    const may = (perm: string) => { if (!a.permissions.includes(perm)) throw new Error(`no permission: ${perm}`) }
+    switch (method) {
+      case 'accounts':
+        may('accounts')
+        return vaultAccounts.map(x => ({ name: x.name, solana: x.solana, evm: x.evm ?? null }))
+      case 'balances': {
+        may('balances')
+        if (reading) throw new Error('busy: one balances call at a time')
+        const list = Array.isArray(p.addresses) ? p.addresses.filter((x): x is string => typeof x === 'string' && isAddress(x)).slice(0, 50) : []
+        const c = solChain()
+        reading = true
+        try {
+          return { network: c.name, rows: await Promise.all(list.map(address => readHoldings(address, c).then(
+            h => ({ address, sol: h.native, tokens: h.cards.slice(1).map(k => ({ mint: k.id, symbol: k.verified ? k.sym : null, amount: k.amount })) }),
+            () => ({ address, sol: null, tokens: [] })))) }
+        } finally { reading = false }
+      }
+      case 'open': { // show one of the owner's accounts in the wallet
+        may('accounts')
+        const x = vaultAccounts.find(v => v.solana === p.address)
+        if (!x) return false
+        if (chain.kind !== 'solana') setChain('solana')
+        setAccount(x.id); go('home')
+        return true
+      }
+      case 'addKeys': {
+        may('keys')
+        const items = Array.isArray(p.items) ? p.items : []
+        const ok = items.length > 0 && items.length <= 50 && items.every(i => i && typeof i.key === 'string' && i.key.length <= 128 && typeof i.name === 'string' && i.name.length <= 80)
+        if (!ok) throw new Error('items: 1..50 of { name, key }')
+        if (sheet || keyOffer || view === 'locked') throw new Error('busy')
+        const offer = { addon: a.id, addonName: a.name, items: items.map(i => ({ name: String(i.name).trim().slice(0, 40) || a.name, key: String(i.key).trim() })) }
+        menu = ''; sheet = { mode: 'addon-keys', origin: frameEl?.getBoundingClientRect() ?? null, offer }; hero?.rest(true)
+        return new Promise(r => (keyOffer = r))
+      }
+    }
+    throw new Error(`unknown method: ${method}`)
+  }
+  function onBridge(e: MessageEvent) {
+    const w = frameEl?.contentWindow, a = addonNow
+    if (!w || e.source !== w || !a || view !== 'addon') return
+    const m = e.data as { talon?: number; id?: unknown; method?: unknown; params?: unknown }
+    if (!m || m.talon !== 1 || typeof m.method !== 'string' || !Number.isSafeInteger(m.id)) return
+    try { if (JSON.stringify(m).length > 64_000) return } catch { return }
+    const now = Math.floor(Date.now() / 60_000)
+    if (now !== bridgeMinute) { bridgeMinute = now; bridgeCalls = 0 }
+    const reply = (r: { result?: unknown; error?: string }) => w.postMessage({ talon: 1, id: m.id, ...r }, '*') // opaque origin: '*', but only to this frame
+    if (++bridgeCalls > 240) return reply({ error: 'too many calls' })
+    bridge(m.method, (m.params && typeof m.params === 'object' ? m.params : {}) as Record<string, unknown>, a).then(result => reply({ result }), err => reply({ error: String(err?.message ?? err) }))
+  }
+  // the frame is told when the owner's accounts change (a key offer landed, a wallet was added)
+  $effect(() => { const l = vaultAccounts.map(x => x.solana).join(); if (view === 'addon' && l && addonNow?.permissions.includes('accounts')) frameEl?.contentWindow?.postMessage({ talon: 1, event: 'accounts' }, '*') })
   function sheetClosed(done: boolean) {
     const m = sheet?.mode, wasSwap = !!sheet?.draft?.swap, wasFee = !!feeInfo && sheet?.draft?.to === feeInfo.owner
+    if (m === 'addon-keys') { keyOffer?.({ added: done }); keyOffer = null; if (done) flash(t('addon.added'), undefined, true) }
     if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
     sheet = null
     hero?.rest(false)
@@ -656,6 +745,9 @@
     ]
     invoke<{ on: boolean; waiting: Batch | null }>('agent_state').then(s => { agentOn = s.on; if (s.waiting) agentReq = s.waiting }, () => {})
     offs.push(listen<Batch>('agent-request', e => showBatch(e.payload)))
+    if (!/Android/i.test(navigator.userAgent)) addonList().then(l => (addons = l), () => {}) // desktop only (addons.rs SUPPORTED)
+    addEventListener('message', onBridge)
+    offs.push(Promise.resolve(() => removeEventListener('message', onBridge)))
     addEventListener('pointerdown', resetIdle)
     return () => { offs.forEach(p => p.then(f => f())); removeEventListener('pointerdown', resetIdle) }
   })
@@ -775,6 +867,7 @@
     <nav class="seg" use:pad={navActive} aria-label={t('nav.sections')}>
       <span class="seg-pad"></span>
       {#each NAV as n, i}<button data-seg class:cur={navActive === i} onclick={() => go(n.id)}>{n.label()}</button>{/each}
+      {#each addons as a, i (a.id)}<button data-seg class:cur={navActive === NAV.length + i} onclick={() => openAddon(a.id)}>{a.name}</button>{/each}
     </nav>
 
     <div class="right">
@@ -783,7 +876,7 @@
     </div>
   </header>
 
-  <main class="col" class:quiet class:settled>
+  <main class="col" class:quiet class:settled class:frame={view === 'addon'}>
     {#if view === 'home'}
       {#key chainId + acc?.id}
         <p class="muted cap"><span class="line"><span>{t('home.total', { acc: acc?.name ?? '', net: chain.name })}</span></span></p>
@@ -1062,6 +1155,8 @@
         </ul>
       {/if}
 
+    {:else if view === 'addon' && addonNow}
+      {#key addonNow.id}<iframe class="addon appear" bind:this={frameEl} src={addonSrc(addonNow.id)} title={addonNow.name} sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>{/key}
     {:else if view === 'settings'}
       <!-- owner 09.10: fewer words, one line per setting; the own-node block is gone (other wallets have none; the core keeps it) -->
       <h2 class="display t s"><span class="line"><span>{t('set.title')}</span></span></h2>
@@ -1083,6 +1178,27 @@
           {#if feeInfo.missing}<button class="btn small" onclick={setupFee} disabled={!!sheet || preparing || !acc || !!acc.watch}>{preparing ? t('send.preparing') : t('fee.setup')}</button>{/if}
         </div>{/if}
         {#if !/Android/i.test(navigator.userAgent)}<label class="set"><span>{t('agent.title')}<small>{t('agent.note')}</small></span><input type="checkbox" class="sw" checked={agentOn} onchange={e => setAgent(e.currentTarget.checked)} /></label>{/if}
+        {#if !/Android/i.test(navigator.userAgent)}<div class="set addons"><span>{t('addon.title')}<small>{t('addon.note')}</small></span>
+          <label class="btn small">{t('addon.install')}<input type="file" accept=".html,text/html" hidden onchange={pickAddon} /></label>
+        </div>
+        {#each addons as a (a.id)}
+          <div class="set sub"><span>{a.name} <em class="faint">{a.version}</em><small>{a.permissions.length ? a.permissions.map(p => t(`addon.perm.${p}` as Parameters<typeof t>[0])).join('; ') : t('addon.asksNothing')}</small></span>
+            <button class="btn small" onclick={() => removeAddon(a.id)}>{t('addon.remove')}</button></div>
+        {/each}
+        {#if addonErr}<p class="err small">{addonErr}</p>{/if}
+        {#if addonFile}
+          {@const m = addonFile.m}
+          <div class="addon-ask panel" transition:slide={{ duration: still() ? 0 : 220 }}>
+            <p><b>{m.name}</b> <span class="faint">{m.version}</span>{#if m.description}<br /><span class="muted">{m.description}</span>{/if}</p>
+            <p class="muted small">{m.permissions.length ? t('addon.asks') : t('addon.asksNothing')}</p>
+            {#if m.permissions.length}<ul class="small">{#each m.permissions as p}<li class:warn={p === 'keys'}>{t(`addon.perm.${p}` as Parameters<typeof t>[0])}</li>{/each}</ul>{/if}
+            {#if m.hosts.length}<p class="small muted">{t('addon.hosts', { h: m.hosts.map(h => h.replace('https://', '')).join(', ') })}</p>{/if}
+            <p class="faint small">{t('addon.trust')}</p>
+            <div class="two"><button class="btn small" onclick={() => (addonFile = null)}>{t('addon.cancel')}</button>
+              <button class="btn small solid" onclick={installAddon}>{addons.some(a => a.id === m.id) ? t('addon.update') : t('addon.installIt')}</button></div>
+          </div>
+        {/if}
+        {/if}
         {#if !vaultOpen}<div class="set"><span>{t('set.lock')}</span>
           <div class="seg small" use:pad={[5, 15, 30].indexOf(autolock)}><span class="seg-pad"></span>{#each [5, 15, 30] as m}<button data-seg class:cur={autolock === m} onclick={() => setAutolock(m)}>{t('set.min', { n: m })}</button>{/each}</div>
         </div>{/if}
@@ -1094,7 +1210,7 @@
 {#if introOn}<Intro ready={readyP} kind={kindP} scene={() => hero} ontraced={() => tracedRes()} onopen={introOpen} ondone={() => (introOn = false)} />{/if}
 
 {#if sheet}
-  <Sheet bind:this={sheetEl} mode={sheet.mode} wallet={sheet.wallet} account={sheet.account} origin={sheet.origin} round={sheet.round} draft={sheet.draft} batch={sheet.batch} fresh={!hasVault} open={vaultOpen} onclose={sheetClosed} />
+  <Sheet bind:this={sheetEl} mode={sheet.mode} wallet={sheet.wallet} account={sheet.account} origin={sheet.origin} round={sheet.round} draft={sheet.draft} batch={sheet.batch} offer={sheet.offer} fresh={!hasVault} open={vaultOpen} onclose={sheetClosed} />
 {/if}
 
 {#if toast}
@@ -1333,6 +1449,16 @@
   label.set { cursor: pointer; }
   .set > span { display: grid; gap: 2px; }
   .set small { font-size: 12.5px; color: var(--ink-3); max-width: 34ch; line-height: 1.4; }
+  .set.addons { border-bottom: 0; }
+  .set.sub { min-height: 0; padding: 4px 0 12px 14px; font-size: 14px; }
+  .set em { font-style: normal; font-size: 12px; }
+  .addon-ask { display: grid; gap: 8px; padding: 16px; margin: 4px 0 12px; border-radius: 16px; }
+  .addon-ask p, .addon-ask ul { margin: 0; }
+  .addon-ask ul { padding-left: 18px; display: grid; gap: 4px; color: var(--ink-2); }
+  .addon-ask li.warn { color: var(--ember); }
+  /* an add-on's tab: its frame fills the column */
+  .col.frame { overflow: hidden; padding-bottom: 12px; display: flex; flex-direction: column; }
+  iframe.addon { flex: 1; width: 100%; min-height: 0; border: 0; background: transparent; color-scheme: dark; }
   /* a switch drawn from the checkbox itself: track + knob, the world's curve */
   .sw { appearance: none; flex: none; width: 40px; height: 24px; margin: 0; border-radius: 999px; background: var(--metal-hi); box-shadow: inset 0 0 0 1px var(--line); position: relative; cursor: pointer; transition: background-color 220ms ease; }
   .sw::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink-2); transition: translate 260ms var(--ease), background-color 220ms ease; }

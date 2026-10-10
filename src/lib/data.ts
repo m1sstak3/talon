@@ -120,6 +120,13 @@ export const prepareEvmSend = (account: string, to: string, amount: string, c: C
   invoke<Draft>('evm_prepare_send', { account, to, amount, chainId: c.chainId, rpc: c.rpc, token, name: c.name, symbol: c.symbol })
 export const evmMax = (address: string, c: Chain, to?: string) => invoke<string>('evm_max', { rpc: c.rpc, chainId: c.chainId, address, to })
 
+// add-ons: one HTML file each, run in a sandboxed frame from the app folder (core: addons.rs)
+export interface Addon { id: string; name: string; version: string; description: string; permissions: string[]; hosts: string[] }
+export const addonList = () => invoke<Addon[]>('addon_list')
+export const addonInspect = (html: string) => invoke<Addon>('addon_inspect', { html })
+export const addonInstall = (html: string) => invoke<Addon[]>('addon_install', { html })
+export const addonRemove = (id: string) => invoke<Addon[]>('addon_remove', { id })
+
 // well-known Solana mints -> label; anything else shows its shortened mint (no token list fetch yet)
 const KNOWN: Record<string, { sym: string; name: string; tint: string; glyph?: Card['glyph'] }> = {
   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: { sym: 'USDC', name: 'USD Coin', tint: '#9fd2ff', glyph: 'usdc' },

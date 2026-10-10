@@ -25,6 +25,9 @@ No need to build anything.
 - **Ledger** (Solana app, USB): add a Ledger account, sign on the device; nothing secret is stored.
 - **AI agents** (optional, off by default): a local MCP server lets an agent read balances and *request* transfers;
   you confirm them in the wallet with your password. Agents never sign. See [`agent/SKILL.md`](agent/SKILL.md).
+- **Add-ons**: your own tab in the wallet from one HTML file (your team's wallets, a project dashboard). Sandboxed,
+  permissions shown before install, never sees keys or the password. Guide: [`docs/ADDONS.md`](docs/ADDONS.md),
+  sample: [`addons/hello.html`](addons/hello.html).
 - 12-word wallets compatible with Phantom and MetaMask (same derivation paths), key import, watch-only addresses.
 
 ## Security model

@@ -403,8 +403,11 @@ const contentKey = (c: Card, v: Variant) => [c.id, c.sym, c.amount, c.amountText
 export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' })
   // DPR capped (Codex 07.10: 165 Hz budget); thin rims stay clean through the 4x MSAA targets
-  const DPR = Math.min(devicePixelRatio, innerWidth < 860 ? 2 : 1.25) // phones: sharp card print at a phone's density; desktop keeps the 165 Hz budget
+  let DPR = Math.min(devicePixelRatio, innerWidth < 860 ? 2 : 1.25) // phones: sharp card print at a phone's density; desktop keeps the 165 Hz budget
   renderer.setPixelRatio(DPR)
+  // the display's frame interval, from the quickest of the first frames (nothing renders yet): phones step down to it
+  let tick = 1 / 60
+  { let last = 0, best = 1, n = 0; const f = (ms: number) => { if (last) best = Math.min(best, (ms - last) / 1000); last = ms; if (++n < 60) requestAnimationFrame(f); else tick = Math.max(1 / 165, best) }; requestAnimationFrame(f) }
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.05
   renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -445,7 +448,8 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
   composer.addPass(new RenderPass(scene, camera))
   const deckPass = new DeckPass(scene, camera)
   composer.addPass(deckPass)
-  composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), 0.12, 0.4, 1.0)) // print stays under the threshold
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.12, 0.4, 1.0) // print stays under the threshold
+  composer.addPass(bloom)
   composer.addPass(new OutputPass())
   const finish = new ShaderPass(FINISH)
   composer.addPass(finish)
@@ -669,7 +673,9 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
   let vw = 0, vh = 0, viewK = -1
   // the QR on the card's back is read by a phone camera: full device resolution while it faces the viewer (the ring is
   // still then), the capped ratio again before it turns away
+  let sharpOn = false
   function sharp(on: boolean) {
+    sharpOn = on
     const r = on ? Math.min(devicePixelRatio, 2) : DPR
     if (renderer.getPixelRatio() === r) return
     renderer.setPixelRatio(r); composer.setPixelRatio(r); layout()
@@ -702,9 +708,25 @@ export function createHero(canvas: HTMLCanvasElement, on: HeroEvents = {}) {
 
   let lastRing = NaN, lean = 0
   const tmp = new THREE.Euler(), qB = new THREE.Quaternion(), qT = new THREE.Quaternion(), vB = new THREE.Vector3()
+  // phones (owner 10.10: not smooth at 120 Hz, the phone heats): while frames keep missing the display's pace, the
+  // resolution steps down (2 -> 1.25) and then the soft glow goes; never back up within a run, so it cannot oscillate
+  let slow = 0, behind = 0
+  function pace(raw: number, t: number) {
+    if (innerWidth >= 860 || t < 4 || raw > 0.25 || sharpOn || birth.on || (DPR <= 1.25 && !bloom.enabled)) return
+    slow += (raw - slow) * 0.05
+    behind = slow > tick * 1.4 ? behind + raw : 0
+    if (behind < 2) return
+    behind = 0; slow = tick
+    if (DPR > 1.25) { DPR = Math.max(1.25, DPR - 0.25); renderer.setPixelRatio(DPR); composer.setPixelRatio(DPR); layout() }
+    else if (bloom.enabled) bloom.enabled = false
+    if (import.meta.env.DEV) console.warn(`[pace] ${Math.round(1 / tick)} Hz display: dpr ${DPR}, glow ${bloom.enabled}`)
+  }
+  // dev: window.__pace(1 / 240) pretends a 240 Hz display, to watch the steps on a fast machine
+  if (import.meta.env.DEV) (window as any).__pace = (k?: number) => (k && (tick = k), { tick, slow, behind, DPR, sharpOn, birth: birth.on, w: innerWidth, bloom: bloom.enabled })
   function frame() {
     timer.update()
-    const dt = Math.min(timer.getDelta(), 1 / 20), t = timer.getElapsed()
+    const raw = timer.getDelta(), dt = Math.min(raw, 1 / 20), t = timer.getElapsed()
+    pace(raw, t)
     const still = reduced.matches || frozen
     const ease = (tau: number) => 1 - Math.exp(-dt / tau) // same feel at 60, 144 and 165 Hz
     if (vw && shift.v !== viewK) view()

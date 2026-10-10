@@ -378,6 +378,24 @@ pub fn add_wallet(path: &Path, src: Source, name: &str, pass: &str) -> Result<Ve
     Ok(accs)
 }
 
+/// several Solana keys at once (an add-on's import): one decryption, one write; keys already here are skipped.
+/// Returns the new list and how many were added.
+pub fn add_keys(path: &Path, items: &[(&str, &str)], pass: &str) -> Result<(Vec<Account>, usize), String> {
+    let _w = WRITE.lock().unwrap();
+    let (mut sec, mut accs, kdf) = open(&read(path)?, pass)?;
+    let mut added = 0;
+    for (name, key) in items {
+        let w = new_wallet(Source::SolanaKey(key))?;
+        let a = account(&w, 0, name);
+        if accs.iter().any(|x| x.solana == a.solana) { continue }
+        accs.push(a);
+        sec.wallets.push(w);
+        added += 1;
+    }
+    if added > 0 { write_proven(path, &seal(&sec, pass, kdf, accs.clone())?, pass)?; }
+    Ok((accs, added))
+}
+
 /// next derived account of a phrase wallet
 pub fn add_account(path: &Path, wallet: &str, name: &str, pass: &str) -> Result<Vec<Account>, String> {
     let _w = WRITE.lock().unwrap();
@@ -547,6 +565,25 @@ mod tests {
         assert!(add_account(&p, &l.wallet, "x", pass).unwrap_err().contains("Ledger"));
         assert!(add_wallet(&p, Source::Ledger { pubkey: pk, index: 2 }, "again", pass).unwrap_err().contains("уже есть"));
         assert!(add_wallet(&p, Source::Ledger { pubkey: "nope", index: 0 }, "bad", pass).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn add_keys_batch() {
+        let dir = std::env::temp_dir().join(format!("cw-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("vault.json");
+        let pass = "correct horse battery";
+        create(&p, Source::Phrase(ABANDON), "Основной", pass, CHEAP).unwrap();
+        let key = |i| { let s = solana_key(ABANDON, i); bs58::encode([s.as_ref(), SigningKey::from_bytes(&s).verifying_key().as_bytes()].concat()).into_string() };
+        let (k0, k1, k2) = (key(0), key(1), key(2));
+        // the main account's own key is skipped, the other two land with their names, one write
+        let (accs, added) = add_keys(&p, &[("A", &k0), ("B", &k1), ("C", &k2)], pass).unwrap();
+        assert_eq!((added, accs.len(), accs[1].name.as_str(), accs[2].solana.clone()), (2, 3, "B", sol_address(&solana_key(ABANDON, 2))));
+        assert_eq!(unlock(&p, pass).unwrap(), accs);
+        assert_eq!(add_keys(&p, &[("B", &k1)], pass).unwrap().1, 0, "again: nothing added");
+        assert!(add_keys(&p, &[("D", "not a key")], pass).is_err(), "a bad key stops the whole batch");
+        assert_eq!(accounts(&p).unwrap().len(), 3);
+        assert!(add_keys(&p, &[("E", &key(3))], "wrong password!").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

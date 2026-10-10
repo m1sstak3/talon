@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SheetMode = 'welcome' | 'export' | 'create' | 'restore' | 'add-new' | 'add-import' | 'add-account' | 'add-evm' | 'add-ledger' | 'password' | 'send' | 'batch'
+  export type SheetMode = 'welcome' | 'export' | 'create' | 'restore' | 'add-new' | 'add-import' | 'add-account' | 'add-evm' | 'add-ledger' | 'password' | 'send' | 'batch' | 'addon-keys'
   export interface Draft {
     id: string; open: boolean; account: string; from: string; to: string; network: string; test: boolean; newRecipient: boolean; warn: string | null
     amount: string; symbol: string | null; mint: string | null; fee: string; rent: string; solTotal: string
@@ -15,6 +15,8 @@
     rows: { name: string; from: string; balance: string; amount: string; fee: string; left: string }[]
     known?: boolean // the destination is one of the owner's accounts or contacts (set by the app)
   }
+  // keys an add-on hands over (bridge «addKeys»): the sheet shows what they open and asks the wallet password
+  export interface Offer { addon: string; addonName: string; items: { name: string; key: string }[] }
 </script>
 
 <script lang="ts">
@@ -25,8 +27,8 @@
   import { invoke } from '@tauri-apps/api/core'
   import Icon from './Icon.svelte'
 
-  let { mode: modeIn, wallet = '', account = '', fresh: freshIn = false, open: openIn = false, origin = null, round, draft = null, batch = null, onclose }: {
-    mode: SheetMode; wallet?: string; account?: string; fresh?: boolean; open?: boolean; origin?: DOMRect | null; round?: number; draft?: Draft | null; batch?: Batch | null
+  let { mode: modeIn, wallet = '', account = '', fresh: freshIn = false, open: openIn = false, origin = null, round, draft = null, batch = null, offer = null, onclose }: {
+    mode: SheetMode; wallet?: string; account?: string; fresh?: boolean; open?: boolean; origin?: DOMRect | null; round?: number; draft?: Draft | null; batch?: Batch | null; offer?: Offer | null
     onclose: (done: boolean) => void
   } = $props()
   // fixed for the sheet's life: saving a new vault flips `fresh` while the sheet is still folding away
@@ -40,8 +42,8 @@
   const glass = gsap.parseEase('glass') ?? ((t: number) => 1 - (1 - t) ** 3)
   const out3 = (t: number) => 1 - (1 - t) ** 3
 
-  type Step = 'start' | 'reveal' | 'keys' | 'words' | 'check' | 'secret' | 'save' | 'name' | 'evm' | 'ledger' | 'pass' | 'confirm' | 'batch' | 'fail'
-  const first: Record<SheetMode, Step> = { welcome: 'start', export: 'reveal', create: 'words', 'add-new': 'words', restore: 'secret', 'add-import': 'secret', 'add-account': 'name', 'add-evm': 'evm', 'add-ledger': 'ledger', password: 'pass', send: 'confirm', batch: 'batch' }
+  type Step = 'start' | 'reveal' | 'keys' | 'words' | 'check' | 'secret' | 'save' | 'name' | 'evm' | 'ledger' | 'pass' | 'confirm' | 'batch' | 'offer' | 'fail'
+  const first: Record<SheetMode, Step> = { welcome: 'start', export: 'reveal', create: 'words', 'add-new': 'words', restore: 'secret', 'add-import': 'secret', 'add-account': 'name', 'add-evm': 'evm', 'add-ledger': 'ledger', password: 'pass', send: 'confirm', batch: 'batch', 'addon-keys': 'offer' }
   let step = $state<Step>(first[mode0])
   let dir = 1
   let ready = $state(false) // capture protection confirmed
@@ -112,6 +114,7 @@
     invoke('panel_secret', { on: true }).then(async () => {
       ready = true
       if (step === 'words') phrase()
+      if (step === 'offer') preview()
     }, e => { err = String(e); failed = true; step = 'fail' })
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close(false) }
     addEventListener('keydown', key)
@@ -168,6 +171,19 @@
     if (!secret.trim()) { err = 'Вставьте ключ'; return }
     if (!open && !p1) { err = 'Введите пароль'; return }
     run(() => invoke('secure_add_evm', { account, key: secret.trim(), pass: open ? '' : p1 }))
+  }
+
+  // an add-on's keys: the core says which addresses they open and which the wallet already has
+  let offered = $state<{ address: string; have: boolean }[]>([])
+  const fresh2 = $derived(offered.filter(o => !o.have).length)
+  async function preview() {
+    if (!offer) return
+    try { offered = await invoke('addon_keys_preview', { addon: offer.addon, keys: offer.items.map(i => i.key) }) } catch (e) { err = String(e) }
+  }
+  function addOffer() {
+    if (!ready || busy || !offer || !fresh2) return
+    if (!open && !p1) { err = 'Введите пароль'; return }
+    run(() => invoke('secure_addon_keys', { addon: offer.addon, names: offer.items.map(i => i.name), keys: offer.items.map(i => i.key), pass: open ? '' : p1 }))
   }
 
   // a phrase that lands after «back» was pressed belongs to nobody: the generation drops it
@@ -258,7 +274,7 @@
   const titles: Record<Step, string> = {
     start: 'С чего начнём?', reveal: 'Экспорт ключей', keys: 'Ключи счёта', words: 'Запишите 12 слов', check: 'Проверим запись', secret: 'Импорт кошелька',
     save: fresh ? 'Название и пароль' : 'Название', name: 'Новый счёт', evm: 'Ключ Ethereum', ledger: 'Подключить Ledger', pass: open ? 'Поставить пароль' : 'Пароль кошелька',
-    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: 'Запрос агента', fail: 'Лист не открыть',
+    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть',
   }
 </script>
 
@@ -434,6 +450,21 @@
             </button>
           </div>
         {/if}
+        {#if step === 'offer' && offer}
+          <p class="hint">Дополнение «{offer.addonName}» передаёт ключи. Они станут счетами этого кошелька.</p>
+          <ol class="rows">
+            {#each offer.items as it, i (i)}
+              <li class:have={offered[i]?.have}><span><b>{it.name}</b><small class="mono">{offered[i] ? shortA(offered[i].address) : '…'}</small></span><span class="faint">{offered[i]?.have ? 'уже есть' : ''}</span></li>
+            {/each}
+          </ol>
+          <p class="hint warn">Ключи этих счетов известны дополнению. Держите на них то, что доверили бы ему.</p>
+          {#if !open && fresh2}<label><span class="label">Пароль кошелька</span><span class="field"><input type="password" bind:value={p1} autocomplete="current-password" disabled={!ready}
+            onkeydown={e => { if (e.key === 'Enter') addOffer() }} /></span></label>{/if}
+          <div class="acts">
+            <button class="btn" type="button" onclick={() => close(false)} disabled={busy}>Отмена</button>
+            <button class="btn solid go" type="button" onclick={addOffer} disabled={busy || !ready || !fresh2}>{busy ? 'Сохраняем' : fresh2 ? `Добавить ${fresh2}` : 'Все уже есть'}</button>
+          </div>
+        {/if}
         {#if step === 'batch' && batch}
           <!-- plain data only: the agent's words never reach this sheet (prompt injection has no voice here) -->
           <p class="amount display">{ru(batch.total)}<small>SOL</small></p>
@@ -546,6 +577,7 @@
   .rows { margin: 0; padding: 0; list-style: none; display: grid; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); }
   .rows li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   .rows li > span { display: grid; gap: 2px; }
+  .rows li.have { opacity: .5; }
   .rows li > span:last-child { text-align: end; }
   .rows b { font-weight: 400; }
   .rows small { font-size: 12px; color: var(--ink-3); }

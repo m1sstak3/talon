@@ -131,8 +131,8 @@
   .l { left: calc(var(--t) / -2); transform: rotateY(-90deg); }
   .r { right: calc(var(--t) / -2); transform: rotateY(90deg); }
   /* loading: the flat coin turns, compositor only (smooth while the main thread compiles shaders) */
-  /* first launch: a greeting under the turning dot, in slowly, out as the coin grows */
-  .hello { position: absolute; left: 50%; top: calc(50% + 44px); translate: -50% 0; display: grid; gap: 10px; text-align: center; white-space: nowrap; opacity: 0; transform: translateY(8px); transition: opacity 700ms cubic-bezier(.45,.05,.2,1), transform 700ms cubic-bezier(.45,.05,.2,1); }
+  /* first launch: a greeting under the turning dot, in slowly, out as the coin grows; wraps on a phone (owner 10.10: it was cut at the edges) */
+  .hello { position: absolute; left: 50%; top: calc(50% + 44px); translate: -50% 0; width: min(560px, calc(100vw - 32px)); display: grid; gap: 10px; text-align: center; text-wrap: balance; opacity: 0; transform: translateY(8px); transition: opacity 700ms cubic-bezier(.45,.05,.2,1), transform 700ms cubic-bezier(.45,.05,.2,1); }
   .hello:global(.on) { opacity: 1; transform: none; transition-duration: 1100ms; }
   .hello b { font-family: var(--display, inherit); font-weight: 300; font-size: 30px; letter-spacing: -.01em; color: var(--ink); }
   .hello span { font-size: 14px; color: var(--ink-2); }

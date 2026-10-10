@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- A Talon add-on is this one file. Copy it, change the manifest below, install it: Settings → Дополнения → Установить из файла.
+     Guide: docs/ADDONS.md -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Hello</title>
+<!-- the manifest: Talon reads it from this exact tag before install and shows the permissions to the owner -->
+<script type="application/json" id="talon-addon">
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "description": "Образец: ваши счета Solana и их балансы",
+  "permissions": ["accounts", "balances"],
+  "hosts": []
+}
+</script>
+<style>
+  :root { color-scheme: dark; --ink: #eeebe5; --ink-2: #b9b4ab; --ink-3: #7d786f; --line: rgb(238 235 229 / .1); --ember: #ff5a2e; }
+  body { margin: 0; background: transparent; color: var(--ink); font: 15px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 28px; font-weight: 600; margin: 4px 0 16px; letter-spacing: -.02em; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  li:hover b { color: #fff; }
+  small, .mono { color: var(--ink-3); font: 12px ui-monospace, monospace; }
+  .err { color: var(--ember); }
+</style>
+</head>
+<body>
+<h1>Мои счета</h1>
+<ul id="list"><li>Загружаем…</li></ul>
+<script>
+  // ---- the bridge: copy as is. talon(method, params) -> Promise; events arrive as `talon:<name>` on window
+  const talon = (() => {
+    let n = 0; const wait = new Map()
+    addEventListener('message', e => {
+      const m = e.data
+      if (e.source !== parent || !m || m.talon !== 1) return
+      if (m.event) return dispatchEvent(new Event('talon:' + m.event))
+      const w = wait.get(m.id); if (!w) return
+      wait.delete(m.id); m.error ? w.no(new Error(m.error)) : w.ok(m.result)
+    })
+    return (method, params = {}) => new Promise((ok, no) => { const id = ++n; wait.set(id, { ok, no }); parent.postMessage({ talon: 1, id, method, params }, '*') })
+  })()
+
+  // ---- the add-on itself
+  const list = document.getElementById('list')
+  const short = a => a.slice(0, 4) + '…' + a.slice(-4)
+  async function draw() {
+    try {
+      const accounts = await talon('accounts')                                   // [{ name, solana, evm }]
+      const { rows } = await talon('balances', { addresses: accounts.map(a => a.solana) }) // [{ address, sol, tokens }]
+      list.replaceChildren(...accounts.map((a, i) => {
+        const li = document.createElement('li')
+        const sol = rows[i].sol === null ? '—' : rows[i].sol.toLocaleString('ru-RU', { maximumFractionDigits: 4 }) + ' SOL'
+        li.innerHTML = `<span><b></b><br><small class="mono"></small></span><span class="mono"></span>`
+        li.querySelector('b').textContent = a.name
+        li.querySelector('small').textContent = short(a.solana)
+        li.lastElementChild.textContent = sol
+        li.onclick = () => talon('open', { address: a.solana })                 // shows this account in the wallet
+        return li
+      }))
+    } catch (e) { list.innerHTML = '<li class="err"></li>'; list.firstChild.textContent = e.message }
+  }
+  draw()
+  addEventListener('talon:accounts', draw) // the owner added or removed an account
+</script>
+</body>
+</html>
