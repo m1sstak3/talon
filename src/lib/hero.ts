@@ -166,13 +166,13 @@ function tex(cv: HTMLCanvasElement) {
 }
 
 // ---------------------------------------------------------------- backdrop: what stands behind the cards, alive
-// Three backgrounds in Settings → «Фон» (owner 10.10 rejected rooms, haze and rays as «the same spot every time»; Codex took
-// the references apart: fxology, doombeans, rainbow — no room, light belongs to the object). «Отпечаток»: the card printed
-// on black lacquer; «Стекло»: a pane of black glass behind the card; «Рельеф»: graphite folds. Motion in 3 words:
-// «блик, наклон, складка» — slow highlights, a rocking pane, the fold's crest following the ring. All take a held-back tint of
-// the network's mark; a send sends one ember ring from the docked card. Linear light before ACES; the finish pass dithers.
-// `time` stops under reduced motion.
-export const THEMES = ['imprint', 'glass', 'relief'] as const
+// Owner 10.10 rejected rooms, haze and rays («the same spot every time»); 11.10: no blur at all, «чёткость, грани». So the
+// wall carries only hard detail: every line is one device pixel wide whatever the distance (its width comes from the
+// screen, fwidth), and light is the docked card's own, raking the wall from its upper side. The wall: «Грани» — split
+// obsidian, flat facets whose tilts catch the card's light one by one. Kept as the alternative: «Гравюра», a banknote
+// rosette cut around the card. Motion in 3 words: «скол, блик, поворот» — glints travel as the light drifts and the ring turns.
+// Linear light before the output pass; the finish pass dithers. `time` stops under reduced motion.
+export const THEMES = ['facets', 'engrave'] as const
 export type Theme = (typeof THEMES)[number]
 const backdropMat = new THREE.ShaderMaterial({
   uniforms: {
@@ -183,78 +183,59 @@ const backdropMat = new THREE.ShaderMaterial({
   fragmentShader: `
     varying vec2 vUv; uniform float ember, gain, time, pan, lean, wave, narrow, slide, docked; uniform vec3 waveC, tint; uniform int theme;
     float G(vec2 p, vec2 c, vec2 r){ vec2 d = (p - c) / r; return exp(-dot(d, d)); }
-    float h1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
-    float h2(vec2 q){ return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
-    float n1(float x){ float i = floor(x); return mix(h1(i), h1(i + 1.), smoothstep(0., 1., fract(x))); }
-    float n2(vec2 q){ vec2 i = floor(q), f = fract(q); f = f * f * (3. - 2. * f);
-      return mix(mix(h2(i), h2(i + vec2(1., 0.)), f.x), mix(h2(i + vec2(0., 1.)), h2(i + 1.), f.x), f.y); }
-    float fbm(vec2 q){ float s = 0., a = .5; for (int i = 0; i < 4; i++) { s += a * n2(q); q = q * 2.03 + vec2(1.7, 9.2); a *= .5; } return s / .94; }
-    float rbox(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q, 0.)) + min(max(q.x, q.y), 0.) - r; }
+    // one crisp line on each iso-line of f: one device pixel wide at any scale (engraving, never a blur)
+    vec2 hash2(vec2 q){ q = vec2(dot(q, vec2(127.1, 311.7)), dot(q, vec2(269.5, 183.3))); return fract(sin(q) * 43758.5453); }
+    // the facet under x (its lattice id) and the distance to its border (two-pass voronoi: exact borders, so they stay crisp)
+    vec3 facet(vec2 x){
+      vec2 n = floor(x), f = fract(x), mg = vec2(0.), mr = vec2(0.); float md = 8.;
+      for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+        vec2 g = vec2(float(i), float(j)), r = g + hash2(n + g) - f; float d = dot(r, r);
+        if (d < md) { md = d; mr = r; mg = g; }
+      }
+      md = 8.;
+      for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) { // ponytail: 3x3, not 5x5 — a rare border off by a hair, half the cost on a phone
+        vec2 g = mg + vec2(float(i), float(j)), r = g + hash2(n + g) - f;
+        if (dot(mr - r, mr - r) > 1e-5) md = min(md, dot(.5 * (mr + r), normalize(r - mr)));
+      }
+      return vec3(n + mg, md);
+    }
+    float iso(float f, float k){ float v = f * k, d = abs(fract(v) - .5), w = fwidth(v); return 1. - smoothstep(.5 - w * 1.2, .5 - w * .2, d); }
     void main(){
       vec2 p = (vUv - .5) * vec2(120., 68.); // metres on the wall (z = -16); the docked card stands in front of (0, 0)
       float t = time;
-      vec3 bone = vec3(.93, .91, .87), hue = mix(bone, tint, .5); // the network's colour, held back
+      vec3 bone = vec3(.93, .91, .87);
       float room = G(p, vec2(0.), vec2(15., 8.5));
-      vec3 e = vec3(0.);
-      // owner 10.10: «каждый раз одно и то же пятно». Codex, after the references (fxology, doombeans, rainbow): no room and
-      // no free-floating light; light belongs to the card or to one clear material behind it. slide = the ring between
-      // two cards (-.5...5): what is tied to the card travels with it. Judged on CPU renders of the camera's real window.
-      vec2 cc = vec2(-slide * 30. - lean * 1.2, -.3); // where the docked card stands on the wall
-      if (theme == 0) {
-        // «Отпечаток»: the card's metal printed on black lacquer, a step behind and below it: its silhouette, stretched
-        // highlights that turn slowly and with the ring, the network's colour on the rim
-        float s = 1.04 + .015 * sin(t * .4);
-        vec2 o = p - cc - vec2(1.5, -.9);
-        float d = rbox(o, vec2(3.2, 4.7) * s, .55);
-        float body = smoothstep(.12, -.12, d);                     // a crisp plate: lacquer, not a blur
-        vec2 q = o / vec2(3.2, 4.7);
-        float a = .55 + .35 * sin(t * .42) - lean * .35;          // ~15 s, and with the ring's turn
-        float u = dot(q, vec2(cos(a), sin(a)));
-        float streak = exp(-pow((u - .25 * sin(t * .23)) / .09, 2.)) + .6 * exp(-pow((u + .55) / .04, 2.)); // a wide and a thin glint
-        float rim = exp(-pow(d / .08, 2.));                       // the edge as one hard specular line
-        // the network's colour only as a trace in the rim: a coloured veil around the card is banned (brief: no purple haze)
-        e = (bone * (.025 * body + .070 * streak * body) + mix(bone, tint, .3) * (.07 * rim)
-          + bone * .006 * exp(-pow(max(d, 0.) / 9., 2.))) * docked; // the print belongs to the docked card: none while the deck rests far away
-      } else if (theme == 1) {
-        // «Стекло»: one pane of black glass stands behind the card, turned away to the left; its thickness shows in a double
-        // bright edge, and through it the card's colour, bent. It rocks 2-3 degrees over ~18 s; a reflection crosses it
-        float ang = .5 + .045 * sin(t * .35) + lean * .03;
-        vec3 n = normalize(vec3(sin(ang), .06, cos(ang)));
-        vec3 rd = normalize(vec3(p, -16.));
-        vec3 c0 = vec3(-1., .3, -8.5);
-        float tp = dot(c0, n) / dot(rd, n);
-        vec3 hp = rd * tp;
-        vec3 ux = normalize(cross(vec3(0., 1., 0.), n)), uy = cross(n, ux);
-        vec2 lp = vec2(dot(hp - c0, ux), dot(hp - c0, uy));
-        float edge = rbox(lp, vec2(3.5, 2.55), .14);                // cut glass corners (a round .6 read as a tablet)
-        float front = step(0., tp), inside = smoothstep(.15, -.15, edge) * front;
-        vec3 rr = refract(rd, n, 1. / 1.5);
-        float through = smoothstep(1.2, -1.2, rbox(p + rr.xy * 4. - cc, vec2(3.2, 4.7), .55));
-        float fres = pow(1. - abs(dot(rd, n)), 3.);
-        float rimL = (exp(-pow(edge / .03, 2.)) + .6 * exp(-pow((edge + .07) / .03, 2.))) * (.45 + .55 * smoothstep(-2.55, 2.55, lp.y));
-        float sweep = exp(-pow((lp.x + lp.y * .35 - 30. * fract(t * .018) + 15.) / 2.5, 2.));
-        e = inside * (tint * .035 * through + bone * (.012 * fres + .04 * sweep * (.3 + .7 * fres)) + bone * .006 * (.4 + .6 * smoothstep(-3.5, 3.5, lp.x)))
-          + bone * .11 * rimL * front;
+      // slide = the ring between two cards (-.5...5): what belongs to the card travels with it
+      vec2 cc = vec2(-slide * 30. - lean * 1.2, -.3);
+      float lit = G(p, cc + vec2(-2., 3.), vec2(30., 24.)) * (.35 + .65 * docked); // the docked card's light; the far deck throws less
+      vec3 e;
+      if (theme == 1) {
+        // «Гравюра»: two interlaced rosettes cut around the card; their phase comes from the network's colour, so a switch
+        // re-cuts the pattern smoothly while the tint tweens; integer lobes keep the angle seamless
+        vec2 q = p - cc;
+        float r = length(q), a = atan(q.y, q.x), ph = dot(tint, vec3(5., 9., 3.));
+        float f1 = r + .9 * sin(9. * a + ph + t * .05) + .35 * sin(13. * a - ph);
+        float f2 = r + .9 * sin(9. * a - ph - t * .05 + 1.57) - .35 * sin(13. * a + ph);
+        float lines = max(iso(f1, 1.25), .7 * iso(f2, 1.25)) * smoothstep(0., 1.5, max(abs(q.x) - 3.4, abs(q.y) - 4.9)); // plain only under the card
+        e = (bone * (.004 + .05 * lit) + mix(bone, tint, .55) * .02 * lit) * lines;
       } else {
-        // «Рельеф»: graphite with two shallow folds; the volume is in the turn of the tone, the crest highlights follow
-        // the card's turn, and the network's colour lies only on the crest nearest to the card
-        vec2 dir1 = normalize(vec2(1., -.35)), dir2 = normalize(vec2(.55, 1.));
-        float o1 = dot(p, dir1) - 2. + sin(t * .27) * .8, o2 = dot(p, dir2) + 4. + sin(t * .23 + 1.) * .7;
-        float w1 = 9., w2 = 11.;
-        float h1v = 1.4 * exp(-pow(o1 / w1, 2.)), h2v = .9 * exp(-pow(o2 / w2, 2.));
-        vec2 grad = h1v * (-2. * o1 / (w1 * w1)) * dir1 + h2v * (-2. * o2 / (w2 * w2)) * dir2;
-        vec3 nrm = normalize(vec3(-grad * 5., 1.));
-        float th = 2.2 + lean * .5 + slide * 1.2 + .15 * sin(t * .3);
-        vec3 L = normalize(vec3(cos(th), sin(th), 1.1)), Hh = normalize(L + vec3(0., 0., 1.));
-        float spec = pow(max(dot(nrm, Hh), 0.), 20.), dif = max(dot(nrm, L), 0.);
-        float grain = fbm(p * 2.4) - .5;
-        e = vec3(.07, .07, .078) * dif * dif * (1. + .25 * grain) + bone * .06 * spec + tint * .04 * spec * G(p, cc, vec2(12., 9.)); // the turn of the tone shows the folds, the crest catches the light
+        // «Грани»: a wall of flat facets, like split obsidian. Each facet has its own tilt, so the card's light picks some
+        // and leaves others: the edges are true discontinuities, drawn as one-pixel grooves; the light drifts a little,
+        // the wall slides a little with the ring, so the glints travel
+        vec3 fc = facet((p + vec2(cc.x * .15, 0.)) / 2.6);
+        vec2 hn = hash2(fc.xy * 1.7 + 3.1) * 2. - 1.;
+        vec3 nrm = normalize(vec3(hn * .5, 1.));
+        vec3 lp = vec3(cc + vec2(-3., 4.) + 1.5 * vec2(cos(t * .11), sin(t * .09)), 9.);
+        vec3 L = normalize(lp - vec3(p, 0.)), Hh = normalize(L + vec3(0., 0., 1.));
+        float dif = max(dot(nrm, L), 0.), spec = pow(max(dot(nrm, Hh), 0.), 56.); // a few facets catch the light, most stay black
+        float groove = smoothstep(0., fwidth(fc.z) * 1.5, fc.z);
+        e = (bone * (.006 * dif * dif + .10 * spec) * lit + mix(bone, tint, .6) * .03 * spec * lit) * groove;
       }
-      e *= mix(.5 + .5 * smoothstep(-9., -4., p.x), .45, narrow); // the money column stays dark (desktop: left; phone: below)
+      e *= mix(.3 + .7 * smoothstep(-5., -1., p.x), .45 * smoothstep(-12., -4., p.y - cc.y), narrow); // the money column stays dark (desktop: left; phone: below the card)
       // a switch or a send: one ring leaves the docked card and crosses the room
       float r = wave * 26., ring = exp(-pow((length(p * vec2(1., 1.2)) - r) / 1.8, 2.)) * (1. - wave) * step(.0005, wave);
       e += waveC * .14 * ring * (.35 + .65 * room);
-      vec3 c = (.9 + .1 * G(p, vec2(0.), vec2(12., 7.))) * (vec3(.00212, .00212, .00304) + gain * e); // nearly flat: no spot of its own
+      vec3 c = vec3(.00212, .00212, .00304) + gain * e; // the wall itself is flat black: no spot of its own
       c += vec3(.30, .08, .02) * exp(-dot(p / vec2(4., 4.6), p / vec2(4., 4.6)) * 2.2) * ember;
       gl_FragColor = vec4(c, 1.);
     }`,

@@ -54,10 +54,8 @@
   function outside(e: PointerEvent) { if (menu && !(e.target as Element).closest?.('.wrap')) menu = '' }
   $effect(() => { if (!menu) { plus = false; addingNet = false; moreNets = false; netQ = '' } })
   let sel = $state<string>('') // selected token id
-  // background theme (Settings → «Фон»), per device
-  // ponytail: one quiet background until the new direction (owner 10.10: the three are rejected); «Отпечаток» drew a
-  // second dark plate behind the docked card that read on a phone as one card passing through another
-  const theme: Theme = 'relief'
+  // the wall behind the cards: one, chosen for the owner (no picker: owner 07.10 «сам поставь»); «Гравюра» is the other
+  const theme: Theme = 'facets'
   let autolock = $state((() => { try { return Number(localStorage.getItem('autolock')) || 15 } catch { return 15 } })())
 
   let vaultAccounts = $state<Account[]>([])
