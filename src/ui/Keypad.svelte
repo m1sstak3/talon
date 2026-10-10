@@ -13,11 +13,16 @@
     if (frac !== undefined && frac.length >= max) return // never more digits than the token has
     value = value === '0' ? k : value + k
   }
+  // a long press on «стереть» clears the whole amount, like a phone's own keypad
+  let timer = 0
+  function hold() { clearTimeout(timer); timer = window.setTimeout(() => { if (value) { value = ''; haptic('tick') } }, 550) }
+  const letGo = () => clearTimeout(timer)
 </script>
 
 <div class="keypad" role="group" aria-label="Цифры">
   {#each KEYS as k}
-    <button type="button" class="key" onclick={() => press(k)} aria-label={k === 'del' ? 'Стереть' : k}>{#if k === 'del'}<Icon name="back" size={22} />{:else}{k}{/if}</button>
+    <button type="button" class="key" onclick={() => press(k)} aria-label={k === 'del' ? 'Стереть' : k}
+      onpointerdown={() => k === 'del' && hold()} onpointerup={letGo} onpointerleave={letGo} oncontextmenu={e => e.preventDefault()}>{#if k === 'del'}<Icon name="del" size={24} />{:else}{k}{/if}</button>
   {/each}
 </div>
 
@@ -25,7 +30,7 @@
   .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; user-select: none; }
   .key {
     min-height: 56px; border: 0; border-radius: 16px; background: none; color: var(--ink); font: 400 26px var(--font); font-variant-numeric: tabular-nums;
-    cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background-color 160ms ease;
+    cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; transition: background-color 160ms ease;
   }
   .key:active { background: rgb(238 235 229 / .1); transition-duration: 40ms; }
   .key :global(svg) { vertical-align: middle; }

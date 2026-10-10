@@ -195,6 +195,7 @@ const ru = {
   'hist.toL': 'Кому',
   'hist.when': 'Когда',
   'hist.feeL': 'Комиссия сети',
+  'hist.copyId': 'Скопировать номер',
   'hist.empty': 'Операций пока нет',
   'hist.copySig': 'Копировать',
   'usd.missing': '{n} без цены',

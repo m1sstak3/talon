@@ -465,7 +465,7 @@
   function receive() {
     sel = card?.id ?? ''
     swap(() => (view = 'receive'))
-    run(async () => { await hero?.flip(true, myAddress, chain.name.replace(/ Mainnet$/, ''), t('recv.cardNote', { sym: chain.symbol })) })
+    void hero?.flip(true, myAddress, chain.name.replace(/ Mainnet$/, ''), t('recv.cardNote', { sym: chain.symbol })) // never dropped behind another animation (critique 10.10)
     loadHistory() // quiet: fills «recent arrivals» when the node (or the EVM explorer) allows
   }
   function send(prefill = '') {
@@ -867,6 +867,10 @@
 <WindowBar />
 <canvas bind:this={canvas} class="stage" class:off={!hero} class:away aria-hidden="true"></canvas>
 
+<!-- loading: the rows' own shape, quietly breathing, instead of a line of text (the words stay for screen readers) -->
+{#snippet skel(label: string)}
+  <li class="skel" role="status"><span class="vh">{label}</span>{#each [0, 1, 2] as i}<span class="sk" style="--i:{i}" aria-hidden="true"><i></i><b></b><b></b></span>{/each}</li>
+{/snippet}
 {#snippet chainDot(c: Chain)}<span class="cdot" class:test={c.test} class:real={!c.test}></span>{/snippet}
 {#snippet tokIcon(c: Card)}<span class="ticon"><img src={iconURL(c)} alt="" /></span>{/snippet}
 {#snippet swapIcon(id: string)}{#if tokens.find(c => idOf(c) === id)}{@render tokIcon(tokens.find(c => idOf(c) === id)!)}{:else}<span class="ticon"><img use:remoteIcon={picked[id]?.icon ?? null} alt="" /></span>{/if}{/snippet}
@@ -1027,7 +1031,7 @@
           </li>
         {:else}
           {#if !myAddress}<li class="note">{t('home.noAddress', { net: chain.name })}</li>
-          {:else if curState === 'loading'}<li class="faint">{t('watch.loading')}</li>
+          {:else if curState === 'loading'}{@render skel(t('watch.loading'))}
           {:else if curState}<li class="note">{t('watch.fail', { e: netErr(curState) })} <button class="tag" onclick={refresh}>{t('watch.retry')}</button></li>
           {:else}<li class="faint">{t('home.noTokens')}</li>{/if}
         {/each}
@@ -1106,7 +1110,7 @@
             {#if maxSend(card, chain.kind) === 'max' && card.amount > 0}<button type="button" class="tag" onclick={() => evmMax(myAddress, chain, valid(toAddr) ? toAddr : undefined).then(v => countInto(x => (amount = x), amount, v), e => flash(String(e)))}>{t('send.max')}</button>
             {:else if maxSend(card) && Number(maxSend(card)) > 0}<button type="button" class="tag" onclick={() => countInto(v => (amount = v), amount, maxSend(card)!)}>{t('send.max')}</button>{/if}
           </span>
-          {#if touched && amtErr}<span class="err">{amtErr}</span>{:else}<span class="faint small">{t('send.available', { v: fmt(maxAmt, card.sym) })}{#if amt > 0 && valueOf({ ...card, amount: amt }) !== undefined} · ≈ {usd(valueOf({ ...card, amount: amt })!)}{/if}</span>{/if}
+          {#if touched && amtErr}<span class="err">{amtErr}</span>{:else}<span class="faint small">{#if amt > 0 && valueOf({ ...card, amount: amt }) !== undefined}≈ {usd(valueOf({ ...card, amount: amt })!)}{' · '}{/if}{t('send.available', { v: fmt(maxAmt, card.sym) })}</span>{/if}
         </label>
         {#if phone && card.raw && BigInt(card.raw) > 0n}<div class="chips parts">
           {#each [1, 2] as q}<button type="button" class="tag" onclick={() => countInto(v => (amount = v), amount, exact(BigInt(card!.raw!) * BigInt(q) / 4n, card!.decimals ?? 0))}>{q === 1 ? t('send.quarter') : t('send.half')}</button>{/each}
@@ -1138,7 +1142,7 @@
           <div class="swdir"><span class="label">{t('swap.get')}</span><button type="button" class="btn icon" aria-label={t('swap.flip')} onclick={flipSwap}><Icon name="swap" /></button></div>
           <div class="field get">
             <button type="button" class="tokbtn" onclick={() => openPicker('out')} aria-haspopup="dialog">{@render swapIcon(swOut)}<b>{symOf(swOut)}</b><Icon name="chevron" size={14} /></button>
-            <span class="mono getv" class:wait={!swQuote && !!swLast}>{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} />{:else}{swAmt.trim() && !swErr ? '…' : '0'}{/if}</span>
+            <span class="mono getv" class:wait={!swQuote && !!swLast} class:faint={!swShown}>{#if swShown}≈ <Roll text={fmt(Number(swShown.out_amount))} />{:else}{swAmt.trim() && !swErr ? '…' : '0'}{/if}</span>
           </div>
           {#if picked[swOut] && !picked[swOut].verified}<span class="err">{t('swap.unverified', { m: short(swOut) })}</span>{/if}
           <!-- the quote rolls into place; a newer question keeps the last numbers dimmed instead of a blank (M-33, M-34) -->
@@ -1183,7 +1187,7 @@
 
     {:else if view === 'history'}
       <h2 class="display t s"><span class="line"><span>{t('hist.title')}</span></span></h2>
-      {#if histState === 'loading'}<p class="faint">{t('hist.loading')}</p>
+      {#if histState === 'loading'}<ul class="rows">{@render skel(t('hist.loading'))}</ul>
       {:else if histState === t('hist.evmSoon')}<p class="note">{histState}</p>
         {#if chain.explorer && myAddress}<button class="btn small" onclick={() => openAddress(myAddress, chain).catch(e => flash(String(e)))}>{t('hist.explorer')}</button>{/if}
       {:else if histState}<p class="note">{netErr(histState)}</p>
@@ -1245,7 +1249,7 @@
         {#each [{ k: 'solana', title: t('addr.solana'), a: acc?.solana ?? '', nets: visibleChains.filter(c => c.kind === 'solana') }, { k: 'evm', title: t('addr.evm'), a: acc?.evm ?? '', nets: visibleChains.filter(c => c.kind === 'evm') }].filter(g => g.a) as g, gi (g.k)}
           <section class="mine appear" style="--d:{80 + gi * 80}ms">
             <h3 class="sh">{g.title}</h3>
-            <p class="addr mono">{g.a}</p>
+            <p class="addr mono">{g.a.match(/.{1,4}/g)?.join(' ')}</p>
             <p class="nets">{#each g.nets as c}<span class="ntag">{@render chainDot(c)}{c.name}</span>{/each}</p>
             <div class="acts">
               <button class="btn small solid" onclick={() => copy(g.a)}><Icon name={copied === g.a ? 'check' : 'copy'} size={16} />{copied === g.a ? t('act.copied') : t('act.copy')}</button>
@@ -1303,7 +1307,7 @@
         {#if pinned.length}<div class="set"><span>{t('set.nets')}</span>
           <div class="chips">{#each chainList.filter(c => pinned.includes(c.id)) as c (c.id)}<button class="tag" onclick={() => unpin(c.id)} aria-label={`${c.name}: убрать`}>{c.name}<Icon name="close" size={12} /></button>{/each}</div></div>{/if}
         <label class="set"><span>{t('set.usd')}</span><input type="checkbox" class="sw" checked={showUsd} onchange={e => setShowUsd(e.currentTarget.checked)} /></label>
-        <div class="set"><span>{t('set.pass')}<small>{vaultOpen ? t('set.passOff') : t('set.passOn')}</small></span>
+        <div class="set"><span>{t('set.pass')}<small class:warn={vaultOpen}>{vaultOpen ? t('set.passOff') : t('set.passOn')}</small></span>
           <button class="btn small" onclick={e => openSheet('password', e)} disabled={!!sheet}>{vaultOpen ? t('set.passSet') : t('set.passChange')}</button>
         </div>
         {#if feeInfo?.missing && vaultAccounts.some(a => a.solana === feeInfo?.owner)}<!-- a one-time setup for the app owner (his vault holds the fee account); gone once done, users never see it --><div class="set"><span>{t('fee.title')}<small>{feeInfo.missing ? t('fee.missing') : t('fee.ready', { acc: feeName })}</small></span>
@@ -1354,8 +1358,8 @@
         <div><dt>{t('send.net')}</dt><dd>{chain.name}</dd></div>
       </dl>
       <div class="two">
-        <button class="btn small" onclick={() => copy(txOpen)}>{copied === txOpen ? t('act.copied') : t('hist.copySig')}</button>
-        {#if cluster(chain) !== 'local'}<button class="btn small solid" onclick={() => openTx(txOpen, chain).catch(e => flash(String(e)))}>{t('hist.openShort')}</button>{/if}
+        <button class="btn small" onclick={() => copy(txOpen)}>{copied === txOpen ? t('act.copied') : t('hist.copyId')}</button>
+        {#if cluster(chain) !== 'local'}<button class="btn small solid" onclick={() => openTx(txOpen, chain).catch(e => flash(String(e)))}>{t('hist.open')}</button>{/if}
       </div>
     </div>
   {/if}
@@ -1560,6 +1564,14 @@
   .ini { font-size: 14px; }
   .tx .mono { font-size: 14px; }
   .rows .dim { opacity: .5; }
+  .skel { display: grid; gap: 2px; padding: 0 10px; }
+  .sk { display: grid; grid-template-columns: 40px 1fr 64px; gap: 14px; align-items: center; min-height: 60px; animation: skb 1.6s ease-in-out calc(var(--i) * 160ms) infinite; }
+  .sk i { width: 40px; height: 40px; border-radius: 50%; background: var(--metal); }
+  .sk b { height: 12px; border-radius: 6px; background: var(--metal); }
+  .sk b:last-child { justify-self: end; width: 48px; }
+  @keyframes skb { 50% { opacity: .45; } }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  @media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
   .hid { margin-top: 10px; }
   .swdir { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
   .tokbtn { display: inline-flex; align-items: center; gap: 8px; flex: none; min-height: 40px; padding: 0 10px 0 4px; border: 0; border-radius: 999px; background: rgb(238 235 229 / .06); color: var(--ink); cursor: pointer; transition: background-color 160ms ease; }
@@ -1692,7 +1704,6 @@
     .hole.l { height: clamp(240px, 42vh, 380px); } /* the QR card, with the address and «Скопировать» still in view */
     .t { font-size: 44px; margin: 6px 0 6px; }
     .t.s { font-size: 30px; margin: 4px 0 10px; }
-    .back { min-height: 40px; }
 
     .tabbar {
       display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 12;
@@ -1737,6 +1748,10 @@
     .col.full .form { flex: 1; display: flex; flex-direction: column; gap: 12px; }
     .col.full .t.s { font-size: 30px; margin: 4px 0 12px; }
     .col.full .wide { margin-top: auto; }
+    .col.full .amtl { margin-top: auto; } /* the amount sits in the middle of the free space, not under the title */
+    .back { min-height: 44px; }
+    .txd .sum dt { white-space: nowrap; }
+    .set small.warn { color: var(--ember); }
     .amtl { justify-items: center; text-align: center; }
     .amtl .label { justify-self: start; }
     .amtl .field { justify-content: center; min-height: 64px; padding: 0; box-shadow: none; gap: 10px; }

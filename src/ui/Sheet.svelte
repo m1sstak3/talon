@@ -612,6 +612,7 @@
   .phone .body { clip-path: inset(0 0 calc(100% - min(var(--h), var(--max))) 0 round 22px 22px 0 0); }
   .phone section { padding: 20px 20px calc(16px + var(--bottom-inset)); }
   .phone .sum div { grid-template-columns: 112px 1fr; }
+  .phone .x { width: 44px; height: 44px; margin-right: -8px; } /* close: a thumb's target */
 
   @media (prefers-reduced-motion: reduce) {
     .plate, .body, .sheet { transition: none; }
