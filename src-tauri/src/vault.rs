@@ -35,6 +35,9 @@ pub struct Account {
     pub index: u32,
     pub solana: String,
     pub evm: Option<String>, // only phrase wallets derive an EVM address
+    // TON (11.10): phrase wallets only; absent in files written before, so their AAD stays exact
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ton: Option<String>,
     // the key lives on a Ledger (m/44'/501'/index'): nothing secret here, the device signs. Absent when false (old AAD kept)
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ledger: bool,
@@ -140,6 +143,17 @@ pub fn solana_key(phrase: &str, index: u32) -> Zeroizing<[u8; 32]> {
     k.copy_from_slice(&i[..32]);
     k
 }
+/// SLIP-0010 ed25519, the TON path Trust Wallet uses for a BIP39 phrase: m/44'/607'/index'
+pub fn ton_key(phrase: &str, index: u32) -> Zeroizing<[u8; 32]> {
+    let mut i = hmac512(b"ed25519 seed", &[seed64(phrase).as_ref()]);
+    for c in [44u32, 607, index] {
+        let (k, ch) = (Zeroizing::new(i[..32].to_vec()), Zeroizing::new(i[32..].to_vec()));
+        i = hmac512(&ch, &[&[0], &k, &(c | 0x8000_0000).to_be_bytes()]);
+    }
+    let mut k = Zeroizing::new([0u8; 32]);
+    k.copy_from_slice(&i[..32]);
+    k
+}
 pub fn sol_address(seed: &[u8; 32]) -> String { bs58::encode(SigningKey::from_bytes(seed).verifying_key().as_bytes()).into_string() }
 
 /// BIP32 secp256k1, MetaMask/Phantom path m/44'/60'/0'/0/index
@@ -206,7 +220,8 @@ fn account(w: &Wallet, index: u32, name: &str) -> Account {
         }
         _ => (w.ledger.clone().expect("wallet without a key"), None),
     };
-    Account { id: format!("{}/{index}", w.id), wallet: w.id.clone(), name: name.trim().chars().take(40).collect(), index, solana, evm, ledger: w.ledger.is_some() }
+    let ton = w.phrase.as_deref().map(|p| crate::ton::address(&SigningKey::from_bytes(&ton_key(p, index)).verifying_key().to_bytes()));
+    Account { id: format!("{}/{index}", w.id), wallet: w.id.clone(), name: name.trim().chars().take(40).collect(), index, solana, evm, ton, ledger: w.ledger.is_some() }
 }
 
 // ---------------------------------------------------------------- file
@@ -254,6 +269,8 @@ fn open(text: &str, pass: &str) -> Result<(Secrets, Vec<Account>, Kdf), String> 
         let fresh = account(w, a.index, &a.name);
         // written before 0.2: a Solana-key account had no EVM address; the only difference allowed is that one gaining it
         let upgrade = a.evm.is_none() && w.phrase.is_none() && w.evm_key.is_none() && w.ledger.is_none() && Account { evm: None, ..fresh.clone() } == *a;
+        // written before 11.10: a phrase account had no TON address; gaining it is the only difference allowed
+        let upgrade = upgrade || (a.ton.is_none() && Account { ton: None, ..fresh.clone() } == *a);
         if fresh != *a && !upgrade { return Err("хранилище повреждено: адрес не совпадает с ключом".into()) }
         *a = fresh;
     }

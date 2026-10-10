@@ -6,6 +6,7 @@ mod folders;
 mod ledger;
 mod prices;
 mod solana;
+mod ton;
 mod vault;
 
 use std::path::PathBuf;
@@ -431,6 +432,7 @@ async fn sol_tx(sig: String, address: String, cluster: String) -> Result<solana:
 #[tauri::command]
 fn open_address(address: String, cluster: String) -> Result<(), String> {
     let a = address.trim();
+    if cluster == "ton" { if ton::parse(a).is_none() { return Err("это не адрес сети TON".into()) } return launch(&format!("https://tonviewer.com/{a}")) }
     let url = match cluster.strip_prefix("evm:") {
         Some(id) if evm::valid_address(a) => format!("{}/address/{a}", evm::explorer(id.parse().map_err(|_| "нет такой сети")?).ok_or("у этой сети нет обозревателя")?),
         Some(_) => return Err("это не адрес сети Ethereum".into()),
@@ -463,6 +465,9 @@ fn open_tx(sig: String, cluster: String) -> Result<(), String> {
 async fn evm_watch(rpc: String, chain_id: u64, address: String) -> Result<evm::Watch, String> {
     evm::watch(rpc.trim(), chain_id, address.trim()).await
 }
+/// TON (read-only): the coin and USD₮ of an address
+#[tauri::command]
+async fn ton_watch(address: String) -> Result<ton::Watch, String> { ton::watch(address.trim()).await }
 /// the latest operations from the network's explorer (EVM nodes cannot list an address's transactions)
 #[tauri::command]
 async fn evm_history(chain_id: u64, address: String) -> Result<Vec<evm::HTx>, String> { evm::history(chain_id, address.trim()).await }
@@ -911,7 +916,7 @@ pub fn run() {
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
             agent_state, agent_access, agent_paths, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan,
             addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,
-            sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
+            sol_watch, ton_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Talon");
