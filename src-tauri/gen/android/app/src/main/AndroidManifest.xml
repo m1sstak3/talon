@@ -28,6 +28,9 @@
             </intent-filter>
         </activity>
 
+        <!-- the QR scanner's recognition model is fetched with the app, not on the first scan -->
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode" />
+
         <provider
           android:name="androidx.core.content.FileProvider"
           android:authorities="${applicationId}.fileprovider"

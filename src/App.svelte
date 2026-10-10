@@ -237,6 +237,22 @@
       hero?.prime(0)
     } finally { gateBusy = false }
   }
+  // phone: fingerprint unlock (BioPlugin.kt). The core gets the password from the keystore itself; the sheet shows once
+  // per lock (a cancel does not bring it back: the key in the capsule does)
+  const android = /Android/i.test(navigator.userAgent)
+  let bio = $state({ available: false, enabled: false }), bioAsked = false
+  const loadBio = () => { if (android && coreAvailable()) invoke<typeof bio>('bio_state').then(v => (bio = v), () => {}) }
+  function bioUnlock() {
+    if (gateBusy || !bio.enabled) return
+    gateBusy = true; gateErr = ''
+    invoke('bio_unlock').then(() => haptic('ok'), e => { const m = String(e); if (m !== 'cancelled') { gateErr = m; haptic('err') } loadBio() }).finally(() => (gateBusy = false))
+  }
+  $effect(() => { if (gateSafe && bio.enabled && !bioAsked && !introOn) { bioAsked = true; setTimeout(bioUnlock, still() ? 0 : 700) } })
+  function toggleBio(e: Event) {
+    const box = e.currentTarget as HTMLInputElement
+    if (box.checked) { box.checked = false; openSheet('bio', e) } // on only through the sheet: password, then the fingerprint
+    else invoke('bio_disable').finally(loadBio)
+  }
   function enter() {
     if (view !== 'locked') return
     run(async () => {
@@ -251,7 +267,7 @@
     menu = ''
     sheetEl?.shut() // keys or words on screen must not outlive the lock
     if (coreAvailable()) vaultLock()
-    startUnlocked = false
+    startUnlocked = false; bioAsked = false
     run(async () => { view = 'locked'; await hero?.lock() })
   }
   // the sheet grows out of the control that opened it; the deck settles and stops rendering underneath
@@ -378,6 +394,7 @@
     else if (done && m === 'send' && wasFee) { feeInfo = { ...feeInfo!, missing: 0 }; setTimeout(refresh, 2500) } // stays in Settings
     else if (done && m === 'send') { view = 'token'; hero?.throwCard(netCard(chain)) } // the card leaves toward the recipient, docks back
     if (done && m === 'password') refreshVault()
+    if (m === 'password' || m === 'bio') loadBio()
   }
 
   // the password capsule is on screen: keep the window out of screenshots too (Codex 07.10)
@@ -551,6 +568,34 @@
     const app = (window as unknown as { __cwApp?: { paste?(): string } }).__cwApp
     try { const v = (app?.paste ? app.paste() : await navigator.clipboard.readText()).trim(); if (v) to = v.slice(0, 200) } catch {}
   }
+  // the phone's camera reads the recipient's code: a plain address, a Solana Pay link (solana:<to>?amount=) or an
+  // EIP-681 link (ethereum:<to>@chain, …/transfer?address=<to>). What it gives is only typed into the form: the address
+  // check and the confirmation stay as they are
+  let scanning = $state(false)
+  function parseScan(raw: string): { to: string; amount?: string } {
+    const s = raw.trim(), q = new URLSearchParams(s.split('?')[1] ?? '')
+    const sol = s.match(/^solana:([1-9A-HJ-NP-Za-km-z]{32,44})(\?|$)/i)
+    if (sol) { const a = q.get('amount'); return { to: sol[1], amount: a && /^\d+(\.\d+)?$/.test(a) ? a : undefined } }
+    const evm = s.match(/^ethereum:(?:pay-)?(0x[0-9a-fA-F]{40})/i), dest = q.get('address')
+    if (evm) return { to: /\/transfer\b/.test(s) && dest && /^0x[0-9a-fA-F]{40}$/.test(dest) ? dest : evm[1] }
+    return { to: s.slice(0, 200) }
+  }
+  async function scanTo() {
+    const bs = await import('@tauri-apps/plugin-barcode-scanner')
+    try {
+      if ((await bs.checkPermissions()) !== 'granted' && (await bs.requestPermissions()) !== 'granted') { flash(t('send.camNo')); return }
+      scanning = true; document.documentElement.classList.add('scanning'); hero?.rest(true)
+      // ponytail: the plugin's cancel (2.5.2) forgets the pending scan before rejecting it, so its promise never
+      // settles; our own stop wins the race. Drop the race when the plugin is fixed upstream
+      const r = await Promise.race([bs.scan({ windowed: true, formats: [bs.Format.QRCode] }), new Promise<null>(res => (stopScan = () => res(null)))])
+      if (!r) return
+      const p = parseScan(r.content)
+      to = p.to; if (p.amount) amount = p.amount.replace('.', ','); haptic('ok')
+    } catch (e) { if (!/cancel/i.test(String(e))) flash(String(e)) }
+    finally { stopScan = null; scanning = false; document.documentElement.classList.remove('scanning'); hero?.rest(away || !!sheet) }
+  }
+  let stopScan: (() => void) | null = null
+  const cancelScan = () => { stopScan?.(); import('@tauri-apps/plugin-barcode-scanner').then(bs => bs.cancel()).catch(() => {}) }
   async function copy(text: string) {
     try { await navigator.clipboard.writeText(text) } catch {}
     copied = text
@@ -761,7 +806,8 @@
   function backPress() {
     const toBackground = () => (window as unknown as { __cwApp?: { home(): void } }).__cwApp?.home()
     resetIdle()
-    if (sheet) { if (sheetEl && !sheetEl.dismiss()) toBackground() }
+    if (scanning) cancelScan()
+    else if (sheet) { if (sheetEl && !sheetEl.dismiss()) toBackground() }
     else if (picker) picker = ''
     else if (txOpen) txOpen = ''
     else if (menu) menu = ''
@@ -781,6 +827,7 @@
     if (isTauri() && !(globalThis as any).__cwMock && !/Android/i.test(navigator.userAgent)) document.documentElement.style.setProperty('--wc', '126px') // room for the window buttons
     const vs = coreAvailable() ? refreshVault().catch(() => undefined) : Promise.resolve(undefined)
     if (coreAvailable()) loadPending()
+    loadBio()
     vs.then(s => { startUnlocked = !!s?.unlocked; kindRes(!coreAvailable() ? 'none' : !s?.accounts.length ? 'welcome' : s.unlocked ? 'open' : 'locked') })
     // the heavy part (WebGL, light, card faces) starts once the intro's circle is traced
     Promise.all([traced, vs]).then(() => {
@@ -833,7 +880,8 @@
   </div>
   {#if coreAvailable() && hasVault && !vaultOpen}
     <form class="gate" class:busy={gateBusy} class:shut={gateShut} class:bad={!!gateErr} bind:this={gateEl} onsubmit={unlockVault}>
-      <span class="gi"><Icon name="lock" /></span>
+      {#if bio.enabled}<button type="button" class="gi fp" onclick={bioUnlock} disabled={gateBusy} aria-label={t('bio.unlock')} title={t('bio.unlock')}><Icon name="finger" /></button>
+      {:else}<span class="gi"><Icon name="lock" /></span>{/if}
       <input type="password" bind:value={pass} oninput={() => { gateErr = ''; hero?.prime(pass.length / 10) }} readonly={gateBusy} disabled={!gateSafe}
         placeholder={t('lock.password')} aria-label={t('lock.password')} autocomplete="current-password" use:focusSoon />
       <button class="go" aria-label={t('lock.open')} disabled={!pass || gateBusy}><Icon name="chevron" /></button>
@@ -1037,7 +1085,8 @@
         <label class="appear" style="--d:80ms">
           <span class="label">{t('send.to')}</span>
           <span class="field" class:bad={touched && toErr}><input bind:value={to} placeholder={t('send.toPh')} spellcheck="false" autocomplete="off" />
-            {#if !to}<button type="button" class="tag sq" onclick={pasteTo} aria-label={t('send.paste')} title={t('send.paste')}><Icon name="paste" size={16} /></button>{/if}</span>
+            {#if !to}<button type="button" class="tag sq" onclick={pasteTo} aria-label={t('send.paste')} title={t('send.paste')}><Icon name="paste" size={16} /></button>
+              {#if android}<button type="button" class="tag sq" onclick={scanTo} aria-label={t('send.scan')} title={t('send.scan')}><Icon name="scan" size={16} /></button>{/if}{/if}</span>
           {#if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
         </label>
         <div class="chips appear" style="--d:120ms">
@@ -1282,6 +1331,7 @@
           </div>
         {/if}
         {/if}
+        {#if android && bio.available && !vaultOpen}<label class="set"><span>{t('bio.title')}<small>{t('bio.note')}</small></span><input type="checkbox" class="sw" checked={bio.enabled} onchange={toggleBio} /></label>{/if}
         {#if !vaultOpen}<div class="set"><span>{t('set.lock')}</span>
           <div class="seg small" use:pad={[5, 15, 30].indexOf(autolock)}><span class="seg-pad"></span>{#each [5, 15, 30] as m}<button data-seg class:cur={autolock === m} onclick={() => setAutolock(m)}>{t('set.min', { n: m })}</button>{/each}</div>
         </div>{/if}
@@ -1322,6 +1372,15 @@
 
 {#if sheet}
   <Sheet bind:this={sheetEl} mode={sheet.mode} wallet={sheet.wallet} account={sheet.account} origin={sheet.origin} round={sheet.round} draft={sheet.draft} batch={sheet.batch} offer={sheet.offer} fresh={!hasVault} open={vaultOpen} onclose={sheetClosed} />
+{/if}
+
+{#if scanning}
+  <!-- the camera shows through the page (the scanner puts its preview behind the WebView); only this layer stays -->
+  <div class="scanner" role="dialog" aria-label={t('send.scan')}>
+    <span class="vf" aria-hidden="true"></span>
+    <p>{t('send.scanHint')}</p>
+    <button class="btn" onclick={cancelScan}>{t('net.cancel')}</button>
+  </div>
 {/if}
 
 {#if toast}
@@ -1365,6 +1424,8 @@
   .gate.bad { border-color: rgb(255 90 46 / .7); transition: border-color 160ms ease; }
   .gate.shut { width: 58px; scale: .3; opacity: 0; }
   .gi { display: grid; color: var(--ink-2); flex: none; }
+  .gi.fp { place-items: center; width: 40px; height: 40px; margin-left: -10px; border: 0; border-radius: 50%; background: none; color: var(--ink); cursor: pointer; transition: background-color 160ms ease; }
+  .gi.fp:active { background: rgb(238 235 229 / .12); }
   .gate input {
     flex: 1; min-width: 0; height: 100%; background: none; border: 0; outline: 0; color: var(--ink);
     font: 400 16px var(--font); letter-spacing: .14em; animation: appear 400ms var(--ease) 1000ms backwards;
@@ -1583,6 +1644,12 @@
   .agentbar:hover { background: rgb(238 235 229 / .1); }
   .agentbar span { color: var(--ink-2); }
 
+  .scanner { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; align-content: center; gap: 28px; padding: 24px; color: var(--ink); }
+  .scanner .vf { width: min(68vw, 280px); aspect-ratio: 1; border-radius: 28px; box-shadow: 0 0 0 2px rgb(238 235 229 / .9), 0 0 0 100vmax rgb(7 7 10 / .55); }
+  .scanner p { margin: 0; font-size: 15px; text-align: center; text-shadow: 0 1px 8px rgb(0 0 0 / .8); }
+  .scanner .btn { background: rgb(7 7 10 / .7); }
+  :global(:root.scanning), :global(:root.scanning body) { background: transparent !important; }
+  :global(:root.scanning #app > *:not(.scanner)) { visibility: hidden; }
   .toast { position: fixed; left: 50%; top: 84px; translate: -50% 0; z-index: 40; display: flex; gap: 12px; align-items: center; padding: 12px 18px; animation: tst 220ms var(--ease) both; }
   .toast span { display: grid; }
   .toast b { font-weight: 400; }
@@ -1622,7 +1689,10 @@
     .lockf { top: auto; bottom: clamp(56px, 12vh, 120px); padding: 0 16px; }
     .hole { display: block; height: clamp(200px, 40vh, 360px); }
     .hole.s { height: clamp(170px, 30vh, 280px); }
-    .hole.l { height: clamp(260px, 50vh, 440px); }
+    .hole.l { height: clamp(240px, 42vh, 380px); } /* the QR card, with the address and «Скопировать» still in view */
+    .t { font-size: 44px; margin: 6px 0 6px; }
+    .t.s { font-size: 30px; margin: 4px 0 10px; }
+    .back { min-height: 40px; }
 
     .tabbar {
       display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 12;

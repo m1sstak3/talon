@@ -179,7 +179,70 @@ fn protected(app: &AppHandle) -> Result<(), String> {
 /// set, change or remove (empty `new`) the vault password
 #[tauri::command]
 async fn vault_password(app: AppHandle, old: Zeroizing<String>, new: Zeroizing<String>) -> Result<(), String> {
-    vault::repass(&vault_path(&app)?, &old, &new)
+    vault::repass(&vault_path(&app)?, &old, &new)?;
+    bio_disable(app); // the phone kept the old password: fingerprint off until the owner turns it on again
+    Ok(())
+}
+
+// ---------------------------------------------------------------- fingerprint unlock (Android, BioPlugin.kt)
+// The password, encrypted by a keystore key that opens only after a strong biometric, comes from the phone straight
+// into the core; the page asks for an unlock and learns only the result (Codex 10.10). Unlock only: sends still ask
+// for the typed password. A lock while the fingerprint sheet is up wins (epoch).
+#[cfg(target_os = "android")]
+struct Bio(tauri::plugin::PluginHandle<tauri::Wry>);
+#[cfg(target_os = "android")]
+fn bio_call<T: serde::de::DeserializeOwned>(app: &AppHandle, cmd: &str, password: Option<&str>) -> Result<T, String> {
+    use tauri::plugin::mobile::PluginInvokeError::InvokeRejected;
+    let aad = format!("talon-bio-v1|{}", vault_path(app)?.display()); // the blob opens only for this vault file
+    let b = app.try_state::<Bio>().ok_or("отпечаток недоступен")?;
+    b.0.run_mobile_plugin(cmd, serde_json::json!({ "password": password, "aad": aad }))
+        .map_err(|e| match e { InvokeRejected(r) if r.code.as_deref() == Some("cancelled") => "cancelled".into(), InvokeRejected(r) => r.message.unwrap_or_default(), _ => "отпечаток недоступен".into() })
+}
+
+#[tauri::command]
+fn bio_state(app: AppHandle) -> serde_json::Value {
+    #[cfg(target_os = "android")]
+    if let Ok(v) = bio_call::<serde_json::Value>(&app, "state", None) { return v }
+    let _ = app;
+    serde_json::json!({ "available": false, "enabled": false })
+}
+
+#[tauri::command]
+async fn bio_enable(app: AppHandle, pass: Zeroizing<String>) -> Result<(), String> {
+    let path = vault_path(&app)?;
+    if vault::is_open(&path) { return Err("сначала поставьте пароль кошелька".into()) }
+    vault::unlock(&path, &pass)?; // the password the phone will keep is the real one
+    #[cfg(target_os = "android")]
+    return tauri::async_runtime::spawn_blocking(move || bio_call::<serde_json::Value>(&app, "enable", Some(&pass)).map(|_| ())).await.map_err(|_| "отпечаток: внутренняя ошибка".to_string())?;
+    #[cfg(not(target_os = "android"))]
+    Err("отпечаток есть только на телефоне".into())
+}
+
+#[tauri::command]
+async fn bio_unlock(app: AppHandle, state: tauri::State<'_, App>) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        #[derive(serde::Deserialize)] struct Got { password: String }
+        let epoch = state.session.lock().unwrap().epoch;
+        let a = app.clone();
+        // ponytail: the JSON string from the plugin cannot be wiped; the copy the core keeps is
+        let got: Got = tauri::async_runtime::spawn_blocking(move || bio_call(&a, "unlock", None)).await.map_err(|_| "отпечаток: внутренняя ошибка".to_string())??;
+        let pass = Zeroizing::new(got.password);
+        if state.session.lock().unwrap().epoch != epoch { return Err("cancelled".into()) }
+        let accs = vault::unlock(&vault_path(&app)?, &pass)?;
+        { let mut s = state.session.lock().unwrap(); s.unlocked = true; s.accounts = accs.clone(); }
+        changed(&app, &accs, true);
+        Ok(())
+    }
+    #[cfg(not(target_os = "android"))]
+    { let _ = (app, state); Err("отпечаток есть только на телефоне".into()) }
+}
+
+#[tauri::command]
+fn bio_disable(app: AppHandle) {
+    #[cfg(target_os = "android")]
+    let _ = bio_call::<serde_json::Value>(&app, "disable", None);
+    let _ = app;
 }
 
 #[tauri::command]
@@ -775,6 +838,11 @@ pub fn run() {
     let b = b.plugin(tauri_plugin_single_instance::init(|app, _, _| {
         if let Some(w) = app.get_webview_window("main") { let _ = w.unminimize(); let _ = w.set_focus(); }
     }));
+    #[cfg(mobile)]
+    let b = b.plugin(tauri_plugin_barcode_scanner::init()); // phone: the recipient's QR code, read by the camera
+    #[cfg(target_os = "android")]
+    let b = b.plugin(tauri::plugin::Builder::<tauri::Wry, ()>::new("bio")
+        .setup(|app, api| { app.manage(Bio(api.register_android_plugin("io.github.m1sstak3.talon", "BioPlugin")?)); Ok(()) }).build());
     b
         .manage(App { session: Mutex::new(Session::default()), agent: Mutex::new(agent::Hub::default()) })
         // an add-on's page: http://addon.localhost/<id> (Windows, Android) or addon://localhost/<id>; its own CSP
@@ -795,7 +863,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            vault_state, vault_lock, vault_unlock, vault_password, panel_secret,
+            vault_state, vault_lock, vault_unlock, vault_password, panel_secret, bio_state, bio_enable, bio_unlock, bio_disable,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
             agent_state, agent_access, batch_reject, batch_confirm, fee_state,
             addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,

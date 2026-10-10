@@ -48,6 +48,9 @@ lto = true
 tauri-plugin-single-instance = "2"
 hidapi = { version = "2", default-features = false, features = ["windows-native", "linux-static-hidraw"] } # Ledger over USB (ledger.rs)
 
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2" # the recipient's QR code (camera)
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_Foundation"] }
 

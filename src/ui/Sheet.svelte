@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SheetMode = 'welcome' | 'export' | 'create' | 'restore' | 'add-new' | 'add-import' | 'add-account' | 'add-evm' | 'add-ledger' | 'password' | 'send' | 'batch' | 'addon-keys'
+  export type SheetMode = 'welcome' | 'export' | 'create' | 'restore' | 'add-new' | 'add-import' | 'add-account' | 'add-evm' | 'add-ledger' | 'password' | 'send' | 'batch' | 'addon-keys' | 'bio'
   export interface Draft {
     id: string; open: boolean; account: string; from: string; to: string; network: string; test: boolean; newRecipient: boolean; warn: string | null
     amount: string; symbol: string | null; mint: string | null; fee: string; rent: string; solTotal: string
@@ -43,8 +43,8 @@
   const glass = gsap.parseEase('glass') ?? ((t: number) => 1 - (1 - t) ** 3)
   const out3 = (t: number) => 1 - (1 - t) ** 3
 
-  type Step = 'start' | 'reveal' | 'keys' | 'words' | 'check' | 'secret' | 'save' | 'name' | 'evm' | 'ledger' | 'pass' | 'confirm' | 'batch' | 'offer' | 'fail'
-  const first: Record<SheetMode, Step> = { welcome: 'start', export: 'reveal', create: 'words', 'add-new': 'words', restore: 'secret', 'add-import': 'secret', 'add-account': 'name', 'add-evm': 'evm', 'add-ledger': 'ledger', password: 'pass', send: 'confirm', batch: 'batch', 'addon-keys': 'offer' }
+  type Step = 'start' | 'reveal' | 'keys' | 'words' | 'check' | 'secret' | 'save' | 'name' | 'evm' | 'ledger' | 'pass' | 'confirm' | 'batch' | 'offer' | 'fail' | 'bio'
+  const first: Record<SheetMode, Step> = { welcome: 'start', export: 'reveal', create: 'words', 'add-new': 'words', restore: 'secret', 'add-import': 'secret', 'add-account': 'name', 'add-evm': 'evm', 'add-ledger': 'ledger', password: 'pass', send: 'confirm', batch: 'batch', 'addon-keys': 'offer', bio: 'bio' }
   let step = $state<Step>(first[mode0])
   let dir = 1
   let ready = $state(false) // capture protection confirmed
@@ -249,6 +249,13 @@
     run(() => invoke('vault_password', { old: open ? '' : p0, new: nopass ? '' : p1 }))
   }
 
+  // phone: the password goes to the core, which checks it and hands it to the keystore behind the fingerprint sheet
+  function enableBio() {
+    if (!ready) return
+    if (!p1) { err = 'Введите пароль'; return }
+    run(() => invoke('bio_enable', { pass: p1 }).catch(e => { throw String(e) === 'cancelled' ? 'Отпечаток не подтверждён' : e }))
+  }
+
   // send: hold to confirm (brief M-36: hold 1.2 s, 200 ms of quiet, then the throw)
   let hold = $state(0), holdTween: gsap.core.Tween | null = null
   function press() {
@@ -278,7 +285,7 @@
   const titles: Record<Step, string> = {
     start: 'С чего начнём?', reveal: 'Экспорт ключей', keys: 'Ключи счёта', words: 'Запишите 12 слов', check: 'Проверим запись', secret: 'Импорт кошелька',
     save: fresh ? 'Название и пароль' : 'Название', name: 'Новый счёт', evm: 'Ключ Ethereum', ledger: 'Подключить Ledger', pass: open ? 'Поставить пароль' : 'Пароль кошелька',
-    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть',
+    confirm: draft?.swap ? 'Подтвердите обмен' : 'Подтвердите перевод', batch: 'Запрос агента', offer: 'Новые счета', fail: 'Лист не открыть', bio: 'Вход по отпечатку',
   }
 </script>
 
@@ -402,6 +409,12 @@
             <p class="hint warn">Ключи лягут на диск открытыми: кто откроет это устройство или файл, тот заберёт деньги.</p>
           {/if}
           <div class="acts"><button class="btn solid go" type="button" onclick={setPassword} disabled={busy || !ready}>{busy ? 'Сохраняем' : 'Сохранить'}</button></div>
+
+        {:else if step === 'bio'}
+          <label><span class="label">Пароль кошелька</span><span class="field"><input type="password" bind:value={p1} autocomplete="current-password" disabled={!ready}
+            onkeydown={e => { if (e.key === 'Enter') enableBio() }} /></span></label>
+          <p class="hint">Телефон сохранит пароль под отпечатком и будет открывать кошелёк по нему. Переводы по-прежнему с паролем.</p>
+          <div class="acts"><button class="btn solid go" type="button" onclick={enableBio} disabled={busy || !ready}>{busy ? 'Ждём отпечаток' : 'Включить'}</button></div>
 
         {:else if step === 'confirm' && draft}
           {@const nat = draft.native ?? 'SOL'}
