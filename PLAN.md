@@ -117,3 +117,21 @@ Mainnet gate (history): ~~durable pending-send record + restart recovery~~; ~~de
 - Ledger (Solana app, USB HID via hidapi windows-native): framing + APDUs unit-tested, statically checked by Codex; a device
   test is the owner's. Vault stores only the public key + index; sends/swaps/revokes of such an account sign on the device.
 - EVM history: Blockscout v2 / Routescan (no keys); Base, Arbitrum, Polygon, BNB explorers sit behind a bot wall → link only.
+
+**Phone shell, fingerprint, QR (built 10.10, owner's order «как на телефоне — стандартное управление»)**
+- Phone (≤860 px; desktop unchanged): one header row (account left, network + lock right), tab bar Кошелёк/История/
+  Адреса/Настройки, the page scrolls as one with the 3D card in a hole (home, token, QR) that scrolls away (scene rests
+  out of sight), menus and the wallet sheet from the bottom edge (grab, drag down, veil, back), round action keys,
+  send/swap full screen with the wallet's own keypad + quarter/half/all, paste, own accounts as recipients, history by
+  day with a detail sheet, pull to refresh, system haptics (performHapticFeedback via MainActivity bridge).
+- Android: back steps back and sends the app to the background from home (onBackButtonPress + moveTaskToBack); bars'
+  insets as --sa-* from MainActivity (WebView env() is unreliable); adjustResize; allowBackup=false + data extraction
+  rules exclude everything; debuggable builds use a throwaway vault (CW_VAULT) and so may sign on the local validator.
+- Fingerprint unlock (Codex-reviewed 10.10): BioPlugin.kt, AndroidKeyStore AES-GCM key, auth per use with
+  BIOMETRIC_STRONG only, invalidated by new enrollment, StrongBox when present, AAD = vault path, blob in noBackupFiles.
+  The core calls the plugin (run_mobile_plugin) and unlocks itself; the page never receives the password. A lock during
+  the prompt wins (epoch). Unlock only; sends keep the typed password (Codex: a biometric send needs a one-time grant
+  bound to the transaction, consumed by the core — not built). A password change turns it off.
+- QR scan for the recipient: tauri-plugin-barcode-scanner (ML Kit; needs Play services), parses plain addresses,
+  Solana Pay (amount) and EIP-681 (address only). Workaround: the plugin's cancel never settles the scan promise.
+- Deck: no card shares volume with another through deal, gather or turns (checked per frame with window.__cards).

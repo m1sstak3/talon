@@ -15,7 +15,7 @@
     addonList, addonInspect, addonInstall, addonRemove, type Addon,
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
-  import { t, i18n } from './lib/i18n.svelte'
+  import { t, i18n, humanErr } from './lib/i18n.svelte'
   import { pad, countInto, dragDown, pullRefresh, haptic } from './lib/actions'
   import Roll from './ui/Roll.svelte'
   import Icon from './ui/Icon.svelte'
@@ -69,7 +69,7 @@
   // sends whose outcome is unknown (lost reply, crash): listed on the home screen until the network decides
   let unresolved = $state<{ sig: string; cluster: string; chain?: number }[]>([])
   let pendingErr = $state('')
-  const loadPending = () => invoke<{ sig: string; cluster: string; chain?: number }[]>('pending_list').then(l => { unresolved = l; pendingErr = '' }, e => (pendingErr = String(e)))
+  const loadPending = () => invoke<{ sig: string; cluster: string; chain?: number }[]>('pending_list').then(l => { unresolved = l; pendingErr = '' }, e => (pendingErr = humanErr(e)))
   // intro: the scene and the vault state are prepared behind it; the first screen's entrance waits for its signal (M-29)
   let introOn = $state(true)
   let readyRes!: () => void, kindRes!: (k: Kind) => void
@@ -233,7 +233,7 @@
     pass = '' // ponytail: a JS string cannot be wiped; the field is emptied at once and the core zeroizes its copy
     try { await vaultUnlock(p) } // success comes back as vault-changed -> enter()
     catch (err) {
-      gateErr = String(err)
+      gateErr = humanErr(err)
       hero?.prime(0)
     } finally { gateBusy = false }
   }
@@ -245,7 +245,7 @@
   function bioUnlock() {
     if (gateBusy || !bio.enabled) return
     gateBusy = true; gateErr = ''
-    invoke('bio_unlock').then(() => haptic('ok'), e => { const m = String(e); if (m !== 'cancelled') { gateErr = m; haptic('err') } loadBio() }).finally(() => (gateBusy = false))
+    invoke('bio_unlock').then(() => haptic('ok'), e => { const m = String(e); if (m !== 'cancelled') { gateErr = humanErr(m); haptic('err') } loadBio() }).finally(() => (gateBusy = false))
   }
   $effect(() => { if (gateSafe && bio.enabled && !bioAsked && !introOn) { bioAsked = true; setTimeout(bioUnlock, still() ? 0 : 700) } })
   function toggleBio(e: Event) {
@@ -316,11 +316,11 @@
     const input = e.currentTarget as HTMLInputElement, f = input.files?.[0]
     input.value = ''; addonErr = ''; addonFile = null
     if (!f) return
-    try { const html = await f.text(); addonFile = { html, m: await addonInspect(html) } } catch (err) { addonErr = String(err) }
+    try { const html = await f.text(); addonFile = { html, m: await addonInspect(html) } } catch (err) { addonErr = humanErr(err) }
   }
   async function installAddon() {
     if (!addonFile) return
-    try { addons = await addonInstall(addonFile.html); flash(t('addon.installed', { name: addonFile.m.name }), undefined, true); addonFile = null } catch (err) { addonErr = String(err) }
+    try { addons = await addonInstall(addonFile.html); flash(t('addon.installed', { name: addonFile.m.name }), undefined, true); addonFile = null } catch (err) { addonErr = humanErr(err) }
   }
   async function removeAddon(id: string) {
     try { addons = await addonRemove(id); if (addonId === id && view === 'addon') swap(() => (view = 'settings')) } catch (err) { flash(String(err)) }
@@ -405,7 +405,7 @@
     const on = gateUp, g = ++gateGen
     gateSafe = false
     if (sheet) return
-    invoke('panel_secret', { on }).then(() => { if (g === gateGen) gateSafe = on }, e => { if (g === gateGen && on) gateErr = String(e) })
+    invoke('panel_secret', { on }).then(() => { if (g === gateGen) gateSafe = on }, e => { if (g === gateGen && on) gateErr = humanErr(e) })
   })
 
   // auto-lock after a quiet period
@@ -415,8 +415,8 @@
 
   // the core's fixed English network codes, said in Russian; anything else shows as the core wrote it
   // an unknown English line from a node never reaches the screen as is (owner 09.10)
-  const netErr = (e: string) => { const k = e.replace(/^Error:\s*/, ''); return t(`err.${k}` as Parameters<typeof t>[0]) ?? (/[а-яё]/i.test(k) ? k : t('err.network request failed')) }
-  function flash(text: string, sub?: string, ok = false) { toast = { text, sub, ok }; setTimeout(() => (toast = null), 3600) }
+  const netErr = humanErr
+  function flash(text: string, sub?: string, ok = false) { toast = { text: humanErr(text), sub, ok }; setTimeout(() => (toast = null), 3600) }
 
   // phone: the card is part of the page — it stands in a hole at the top of home, a token and its QR, and scrolls away
   // with the page; on the other tabs the screen is all content. Out of sight the scene sleeps (as under a sheet).
@@ -428,9 +428,9 @@
   function setAway(b: boolean) { if (b === away || !hero) return; away = b; if (!sheet) hero.rest(b) }
   let colEl = $state<HTMLElement>(), scrolled = $state(false)
   function band() {
+    scrolled = phone && (colEl?.scrollTop ?? 0) > 4 // the header gets its backing once anything passes under it
     if (!hero || !phone || view === 'locked') return setAway(false) // the lock screen and the welcome keep their centred deck
     const hole = colEl?.querySelector('.hole')?.getBoundingClientRect(), top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0
-    scrolled = (colEl?.scrollTop ?? 0) > 4
     if (!hole || !cardView) return setAway(true)
     setAway(hole.bottom < top + 24)
     hero.setBand(hole.top + 8, hole.bottom - 8)
@@ -1010,7 +1010,7 @@
         <div class="unres appear" style="--d:180ms" role="status">
           <p class="warn">{pendingErr || t('send.unresolved')}</p>
           {#each unresolved as u (u.sig)}
-            <button class="tag mono" onclick={() => copy(u.sig)} title={u.sig}>{u.chain ? (chainList.find(c => c.chainId === u.chain)?.name ?? u.cluster) : u.cluster} · {short(u.sig)} · {copied === u.sig ? t('act.copied') : t('act.copy')}</button>
+            <button class="tag mono" onclick={() => copy(u.sig)} title={u.sig}>{u.chain ? (chainList.find(c => c.chainId === u.chain)?.name ?? u.cluster) : ({ mainnet: 'Solana', devnet: 'Solana Devnet', local: 'Solana Local' } as Record<string, string>)[u.cluster] ?? u.cluster} · {short(u.sig)} · {copied === u.sig ? t('act.copied') : t('act.copy')}</button>
           {/each}
         </div>
       {/if}
@@ -1085,8 +1085,8 @@
         <label class="appear" style="--d:80ms">
           <span class="label">{t('send.to')}</span>
           <span class="field" class:bad={touched && toErr}><input bind:value={to} placeholder={t('send.toPh')} spellcheck="false" autocomplete="off" />
-            {#if !to}<button type="button" class="tag sq" onclick={pasteTo} aria-label={t('send.paste')} title={t('send.paste')}><Icon name="paste" size={16} /></button>
-              {#if android}<button type="button" class="tag sq" onclick={scanTo} aria-label={t('send.scan')} title={t('send.scan')}><Icon name="scan" size={16} /></button>{/if}{/if}</span>
+            {#if !to && android}<button type="button" class="tag sq" onclick={pasteTo} aria-label={t('send.paste')} title={t('send.paste')}><Icon name="paste" size={16} /></button>
+              <button type="button" class="tag sq" onclick={scanTo} aria-label={t('send.scan')} title={t('send.scan')}><Icon name="scan" size={16} /></button>{/if}</span>
           {#if touched && toErr}<span class="err">{toErr}</span>{:else if contactHit}<span class="ok mono">{short(contactHit.address)}</span>{/if}
         </label>
         <div class="chips appear" style="--d:120ms">
@@ -1706,6 +1706,12 @@
 
     .bal { font-size: 48px; }
     .acts :global(.btn) { min-height: 44px; }
+    .field .tag.sq { width: 40px; min-height: 40px; } /* paste and scan: a finger's target */
+    /* a fingertip, not a pointer: small controls grow to a thumb's size on the phone */
+    .chip { min-height: 44px; }
+    .tag { min-height: 40px; padding: 0 14px; }
+    .seg button, .seg.small button { min-height: 40px; }
+    .rf { width: 44px; height: 44px; margin-right: -8px; }
     /* send / receive / swap: round keys with the word under them */
     .acts.money { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
     .acts.money :global(.btn) { flex-direction: column; gap: 8px; min-height: 0; padding: 0; background: none; box-shadow: none; color: var(--ink); font-size: 13px; overflow: visible; }

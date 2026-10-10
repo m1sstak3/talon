@@ -7,7 +7,7 @@
 </script>
 
 <div class="plate" style="width:{size}px">
-  <svg viewBox="0 0 {q.size} {q.size}" shape-rendering="crispEdges" role="img" aria-label="QR"><path {d} fill="#0b0b0e" /></svg>
+  <svg viewBox="0 0 {q.size} {q.size}" shape-rendering="crispEdges" role="img" aria-label="QR‑код"><path {d} fill="#0b0b0e" /></svg>
 </div>
 
 <style>

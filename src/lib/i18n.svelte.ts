@@ -75,6 +75,9 @@ const ru = {
   'err.no connection to the network': 'нет связи с сетью',
   'err.network timeout': 'сеть не ответила вовремя',
   'err.network request failed': 'сеть ответила ошибкой',
+  'err.no main window': 'окно кошелька недоступно: перезапустите его',
+  'err.kdf failed': 'хранилище не открылось: перезапустите кошелёк',
+  'err.bad kdf params': 'хранилище повреждено или записано другой версией',
   'err.the network is rate-limiting requests, try again in a minute': 'сеть просит подождать: слишком много запросов. Попробуйте через минуту',
   'hist.loading': 'Загружаю операции…',
   'hist.stale': 'Сеть сейчас занята: показано сохранённое, обновлю позже.',
@@ -324,6 +327,17 @@ type Key = keyof typeof ru
 const en: Partial<Record<Key, string>> = {} // ponytail: filled when English lands; missing keys fall back to ru
 
 export const i18n = $state({ lang: 'ru' as 'ru' | 'en' })
+
+// an error for the screen (owner 09.10: never a node's or a library's English): the core's fixed codes in Russian;
+// a Russian lead keeps its words and loses an English tail («сеть ответила: execution reverted» -> «сеть ответила»);
+// anything else English becomes «сеть ответила ошибкой». Russian text passes as it is.
+export function humanErr(e: unknown): string {
+  const k = String(e).replace(/^Error:\s*/, '')
+  const known = ru[`err.${k}` as Key]
+  if (known) return t(`err.${k}` as Key)
+  if (!/[а-яё]/i.test(k)) return t('err.network request failed')
+  return k.match(/^([^:]*[а-яё][^:]*):\s*[^а-яё]+$/i)?.[1] ?? k
+}
 
 export function t(key: Key, p?: Record<string, string | number>): string {
   let s: string = (i18n.lang === 'en' ? en[key] : undefined) ?? ru[key]

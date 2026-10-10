@@ -27,6 +27,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import Icon from './Icon.svelte'
   import { haptic } from '../lib/actions'
+  import { humanErr } from '../lib/i18n.svelte'
 
   let { mode: modeIn, wallet = '', account = '', fresh: freshIn = false, open: openIn = false, origin = null, round, draft = null, batch = null, offer = null, onclose }: {
     mode: SheetMode; wallet?: string; account?: string; fresh?: boolean; open?: boolean; origin?: DOMRect | null; round?: number; draft?: Draft | null; batch?: Batch | null; offer?: Offer | null
@@ -119,7 +120,7 @@
       ready = true
       if (step === 'words') phrase()
       if (step === 'offer') preview()
-    }, e => { err = String(e); failed = true; step = 'fail' })
+    }, e => { err = humanErr(e); failed = true; step = 'fail' })
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close(false) }
     addEventListener('keydown', key)
     return () => { ro.disconnect(); removeEventListener('keydown', key); holdTween?.kill(); closing = true }
@@ -147,7 +148,7 @@
     if (!open && !p1) { err = 'Введите пароль'; return }
     busy = true; err = ''
     try { const k = await invoke<typeof keys>('secure_export', { account, pass: open ? '' : p1 }); p1 = ''; if (closing) return; keys = k; go('keys') }
-    catch (e) { err = String(e) } finally { busy = false }
+    catch (e) { err = humanErr(e) } finally { busy = false }
   }
 
   // words and keys to the clipboard through the core: kept out of Windows clipboard history, wiped after a while
@@ -156,14 +157,14 @@
     // Android: the activity's own clipboard bridge (marked sensitive, wiped); desktop: the core (out of Win+V history, wiped)
     const android = (window as unknown as { __cwClip?: { put(t: string): number } }).__cwClip
     try { clearIn = android ? android.put(text) : await invoke<number>('clip_secret', { text }); copiedWhat = what; setTimeout(() => { if (copiedWhat === what) copiedWhat = '' }, 2400) }
-    catch (e) { err = String(e) }
+    catch (e) { err = humanErr(e) }
   }
   // an EVM key for an account imported from a Solana key
   // Ledger: the device lists its first addresses, the owner picks one; the core reads that address from the device again
   let found = $state<string[]>([]), pick = $state(0), searching = $state(false)
   async function findLedger() {
     searching = true; err = ''
-    try { found = await invoke<string[]>('ledger_accounts'); pick = 0 } catch (e) { err = String(e) } finally { searching = false }
+    try { found = await invoke<string[]>('ledger_accounts'); pick = 0 } catch (e) { err = humanErr(e) } finally { searching = false }
   }
   function addLedger() {
     if (!ready || busy || !found.length) return
@@ -182,7 +183,7 @@
   const fresh2 = $derived(offered.filter(o => !o.have).length)
   async function preview() {
     if (!offer) return
-    try { offered = await invoke('addon_keys_preview', { addon: offer.addon, keys: offer.items.map(i => i.key) }) } catch (e) { err = String(e) }
+    try { offered = await invoke('addon_keys_preview', { addon: offer.addon, keys: offer.items.map(i => i.key) }) } catch (e) { err = humanErr(e) }
   }
   function addOffer() {
     if (!ready || busy || !offer || !fresh2) return
@@ -195,7 +196,7 @@
   async function phrase() {
     if (!ready || words.length) return
     const g = ++gen
-    try { const w = (await invoke<string>('secure_new_phrase')).split(' '); if (g === gen && step === 'words') words = w } catch (e) { if (g === gen) err = String(e) }
+    try { const w = (await invoke<string>('secure_new_phrase')).split(' '); if (g === gen && step === 'words') words = w } catch (e) { if (g === gen) err = humanErr(e) }
   }
   function begin(m: 'create' | 'restore') {
     if (failed) return go('fail') // no capture protection: the welcome cannot lead to words or keys
@@ -226,7 +227,7 @@
   }
   async function run(fn: () => Promise<unknown>) {
     busy = true; err = ''
-    try { await fn(); await close(true) } catch (e) { err = String(e); busy = false } // stays busy while it folds: no live button flashes back
+    try { await fn(); await close(true) } catch (e) { err = humanErr(e); busy = false } // stays busy while it folds: no live button flashes back
   }
   function save() {
     if (!ready) return
@@ -274,7 +275,7 @@
     const pass = conf.open ? '' : p1
     busy = true; err = ''
     try { await invoke(batch ? 'batch_confirm' : 'send_confirm', { id: conf.id, pass }); busy = false; await close(true) }
-    catch (e) { err = String(e); busy = false; hold = 0 }
+    catch (e) { err = humanErr(e); busy = false; hold = 0 }
   }
 
   // the agent's request: «Отклонить» closes it for good; the cross only hides the sheet (it waits up to 10 minutes)
