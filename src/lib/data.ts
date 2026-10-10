@@ -105,8 +105,10 @@ export const loadHidden = () => stored<string[]>('hiddenTokens', []) // token mi
 export const saveHidden = (l: string[]) => store('hiddenTokens', l)
 export const loadCustomNets = () => stored<Chain[]>('customNets', []).filter(c => c.kind === 'evm' && c.id.startsWith('custom-')) // networks the owner added
 export const saveCustomNets = (l: Chain[]) => store('customNets', l)
-export const loadPinned = () => stored<string[]>('pinnedNets', []) // «Ещё сети» the owner picked once: shown with the main ones
-export const savePinned = (l: string[]) => store('pinnedNets', l)
+export const loadPinned = () => stored<string[]>('pinnedNets', []) // before 11.10: «Ещё сети» picked once; read once to seed the favourites
+// ★ favourite networks: the ring's cards and the network menu's first section. null = the owner never chose
+export const loadFav = () => stored<string[] | null>('favNets', null)
+export const saveFav = (l: string[]) => store('favNets', l)
 
 // ---------------------------------------------------------------- core calls
 export interface VaultState { accounts: Account[]; unlocked: boolean; open: boolean }

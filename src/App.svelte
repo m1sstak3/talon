@@ -11,7 +11,7 @@
     chains as seedChains, fmt, short, isAddress, isEvmAddress, addressFor, coreAvailable, cluster,
     loadWatch, saveWatch, loadContacts, saveContacts, vaultState, vaultLock, vaultUnlock, prepareSend, readHoldings, readHistory,
     readTx, openTx, readEvmHistory, moveText, solText, loadHidden, saveHidden, usdPrices, usd, maxSend, swapQuote, prepareSwap, exact, USDC, SWAP_TO, solTokens, tokenIcon, evmSwapTokens, evmSwapQuote, evmPrepareSwap, EVM_NATIVE, type TokenInfo, type Tx, type SwapQuote,
-    prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, savePinned,
+    prepareEvmSend, evmMax, openAddress, readPerms, prepareRevoke, type Perm, loadCustomNets, saveCustomNets, loadPinned, loadFav, saveFav,
     addonList, addonInspect, addonInstall, addonRemove, type Addon,
     type Card, type Chain, type Account, type Contact, type Sig, type Holdings,
   } from './lib/data'
@@ -32,8 +32,9 @@
   let hero = $state.raw<Hero | null>(null) // raw: the intro writes to hero.birth, a proxy would swallow it
   let view = $state<View>('locked')
   let chainList = $state<Chain[]>([...seedChains.map(c => ({ ...c })), ...loadCustomNets()])
-  // «Ещё сети»: the less common networks wait in the menu's second part until picked once (then they stay with the main ones)
-  let pinned = $state<string[]>(loadPinned()), moreNets = $state(false)
+  // ★ favourites: their cards stand on the ring and they lead the network menu; the rest are a search or a fold away.
+  // First run (or a pre-11.10 install): the main networks plus the ones picked from «Ещё сети» before
+  let fav = $state<string[]>(loadFav() ?? [...[...seedChains, ...loadCustomNets()].filter(c => !c.test && !c.more).map(c => c.id), ...loadPinned()]), moreNets = $state(false), netQ = $state('')
   // last chosen network and account survive restarts (per-device convenience; storage may be unavailable)
   let chainId = $state((() => { try { return localStorage.getItem('lastChain') || 'solana' } catch { return 'solana' } })())
   let accId = $state((() => { try { return localStorage.getItem('lastAccount') || '' } catch { return '' } })())
@@ -51,7 +52,7 @@
   }
   // a click anywhere outside the open menu closes it, like every menu on the system
   function outside(e: PointerEvent) { if (menu && !(e.target as Element).closest?.('.wrap')) menu = '' }
-  $effect(() => { if (!menu) { plus = false; addingNet = false; moreNets = false } })
+  $effect(() => { if (!menu) { plus = false; addingNet = false; moreNets = false; netQ = '' } })
   let sel = $state<string>('') // selected token id
   // background theme (Settings → «Фон»), per device
   // ponytail: one quiet background until the new direction (owner 10.10: the three are rejected); «Отпечаток» drew a
@@ -111,7 +112,8 @@
   let showUsd = $state((() => { try { return localStorage.getItem('usd') !== 'off' } catch { return true } })())
   function setShowUsd(v: boolean) { showUsd = v; try { localStorage.setItem('usd', v ? 'on' : 'off') } catch {} }
   let prices = $state<Record<string, number>>({}), pricedAt = 0, pricedIds = ''
-  const priceId = (c: Card) => c.id === 'native' ? (chain.kind === 'solana' ? 'SOL' : chain.symbol) : chain.kind === 'solana' ? c.id : c.verified ? c.sym : ''
+  const pidOf = (c: Card, ch: Chain) => c.id === 'native' ? (ch.kind === 'solana' ? 'SOL' : ch.symbol) : ch.kind === 'solana' ? c.id : c.verified ? c.sym : ''
+  const priceId = (c: Card) => pidOf(c, chain)
   const valueOf = (c: Card): number | undefined => { const p = !chain.test && showUsd ? prices[priceId(c)] : undefined; return p === undefined ? undefined : p * c.amount }
   $effect(() => {
     if (!cur || chain.test || !showUsd || !coreAvailable()) return
@@ -196,7 +198,9 @@
       amountText: unproven ? '—' : !address ? t('card.noAddress') : h ? fmt(h.native, c.symbol) : '—', ...look,
     }
   }
-  const netDeck = () => chainList.filter(c => (showTest || !c.test || c.id === chainId) && (!c.more || pinned.includes(c.id) || c.id === chainId)).map(netCard)
+  // the ring: favourites, the test networks while shown, and the current network even when it is neither
+  const onRing = (c: Chain) => c.id === chainId || (c.test ? showTest : fav.includes(c.id))
+  const netDeck = () => chainList.filter(onRing).map(netCard)
 
   async function run(fn: () => Promise<void> | void) {
     if (busy) return
@@ -485,13 +489,15 @@
     menu = ''
     if (id === chainId) return
     quiet = view === 'home'
+    const ring = netDeck().map(c => c.id).join()
     chainId = id; sel = ''
     try { localStorage.setItem('lastChain', id) } catch {}
     load(acc, chain)
     if (view === 'locked') return
     view = 'home'
     // context switches now; the ring turns alongside. Not awaited, not behind the busy lock: rapid clicks retarget
-    hero?.sync(netDeck()); hero?.goTo(id)
+    if (netDeck().map(c => c.id).join() !== ring) hero?.setDeck(netDeck(), chainId, 'glass', 'update').then(() => hero?.goTo(id))
+    else { hero?.sync(netDeck()); hero?.goTo(id) }
   }
   function setAccount(id: string) {
     menu = ''
@@ -537,7 +543,7 @@
     chainList = [...chainList, { id, name: nName.trim(), kind: 'evm', symbol: nSym.trim().toUpperCase(), decimals: 18, chainId: Number(nChain), rpc: nRpc.trim(), explorer: nExp.trim() }]
     saveCustomNets(chainList.filter(c => c.id.startsWith('custom-'))) // they used to vanish on restart
     nName = nRpc = nChain = nSym = nExp = ''; nTouched = false; addingNet = false
-    hero?.setDeck(netDeck(), chainId, 'glass', 'update')
+    fav = [...fav, id]; saveFav(fav) // added by hand: wanted on the ring
     setChain(id)
   }
 
@@ -798,10 +804,49 @@
   const clock = (s: number | null) => (s ? new Date(s * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—')
   const when = (s: number | null) => (s ? new Date(s * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—')
 
-  const visibleChains = $derived(chainList.filter(c => (showTest || !c.test || c.id === chainId) && (!c.more || pinned.includes(c.id) || c.id === chainId)))
-  const extraChains = $derived(chainList.filter(c => c.more && !pinned.includes(c.id) && c.id !== chainId))
-  function pickMore(id: string) { pinned = [...pinned, id]; savePinned(pinned); hero?.setDeck(netDeck(), chainId, 'glass', 'update'); setChain(id) }
-  function unpin(id: string) { pinned = pinned.filter(x => x !== id); savePinned(pinned); if (chainId === id) setChain('ethereum'); else hero?.setDeck(netDeck(), chainId, 'glass', 'update') }
+  // ---------------------------------------------------------------- the network menu: search, ★, what each network holds
+  // Russian and short names people type («эфир», «бинанс»); the coin and the Chain ID are searched too
+  const NET_AKA: Record<string, string> = {
+    solana: 'солана', ethereum: 'эфир эфириум', base: 'бейс база coinbase', arbitrum: 'арбитрум arb', optimism: 'оптимизм op',
+    polygon: 'полигон матик matic', bnb: 'бинанс бнб bsc binance', avalanche: 'аваланч лавина', robinhood: 'робинхуд',
+    linea: 'линея', unichain: 'юничейн uniswap', sonic: 'соник fantom', gnosis: 'гносис', scroll: 'скролл', ink: 'инк kraken',
+    worldchain: 'ворлд world', berachain: 'берачейн', monad: 'монад', hyperevm: 'хайпер hyperliquid',
+  }
+  const hasMoney = (c: Chain) => { const h = holdings[hk(acc, c)]; return !!h && (h.native > 0 || h.cards.some(x => x.verified && x.amount > 0)) }
+  const favNets = $derived(chainList.filter(c => !c.test && (fav.includes(c.id) || c.id === chainId)))
+  const moneyNets = $derived(chainList.filter(c => !c.test && !favNets.includes(c) && hasMoney(c)))
+  const restNets = $derived(chainList.filter(c => !c.test && !favNets.includes(c) && !moneyNets.includes(c)))
+  const netFound = $derived.by(() => {
+    const q = netQ.trim().toLowerCase()
+    return q ? chainList.filter(c => (showTest || !c.test) && `${c.name} ${c.symbol} ${c.chainId ?? ''} ${NET_AKA[c.id] ?? ''}`.toLowerCase().includes(q)) : []
+  })
+  // a network's line in the menu: its dollars when prices are known, else its own coin; nothing until it was checked
+  function netWorth(c: Chain) {
+    const h = holdings[hk(acc, c)]
+    if (!h) return ''
+    if (!hasMoney(c)) return '0'
+    const vals = !c.test && showUsd ? h.cards.map(x => prices[pidOf(x, c)] === undefined ? undefined : prices[pidOf(x, c)] * x.amount).filter((v): v is number => v !== undefined) : []
+    return vals.length ? usd(vals.reduce((a, b) => a + b, 0)) : fmt(h.native, c.symbol)
+  }
+  function toggleFav(id: string) {
+    fav = fav.includes(id) ? fav.filter(x => x !== id) : [...fav, id]; saveFav(fav)
+    if (view !== 'locked') hero?.setDeck(netDeck(), chainId, 'glass', 'update')
+  }
+  // «Проверить все»: only on the owner's word (no silent sweep of twenty RPCs); four at a time, public nodes throttle bursts
+  let checking = $state(false)
+  async function checkAll() {
+    if (checking || !acc) return
+    checking = true
+    const list = chainList.filter(c => !c.test && addressFor(acc, c))
+    for (let i = 0; i < list.length; i += 4) await Promise.all(list.slice(i, i + 4).map(c => load(acc, c, true)))
+    if (showUsd) {
+      const got = list.map(c => [c, holdings[hk(acc, c)]] as const).filter(([, h]) => h)
+      const mints = got.filter(([c]) => c.kind === 'solana').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)))
+      const coins = got.filter(([c]) => c.kind === 'evm').flatMap(([c, h]) => h!.cards.map(x => pidOf(x, c)).filter(Boolean))
+      await usdPrices([...new Set(mints)], [...new Set(coins)]).then(p => (prices = { ...prices, ...p }), () => {})
+    }
+    checking = false
+  }
   let lastShowTest = false
   $effect(() => { if (showTest !== lastShowTest) { lastShowTest = showTest; if (view !== 'locked') hero?.setDeck(netDeck(), chainId, 'glass', 'update') } })
 
@@ -824,6 +869,7 @@
     resetIdle()
     if (e.key === 'Escape' && txOpen) { txOpen = ''; return }
     if (e.key === 'Escape' && menu && !sheet) { menu = ''; return }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyK' && view !== 'locked' && !sheet) { e.preventDefault(); menu = menu === 'net' ? '' : 'net'; addingNet = false; return }
     if (e.target instanceof HTMLInputElement) return
     if (e.key === 'Escape' && !sheet && view !== 'home' && view !== 'locked') back()
   }
@@ -876,6 +922,18 @@
 {#snippet skel(label: string)}
   <li class="skel" role="status"><span class="vh">{label}</span>{#each [0, 1, 2] as i}<span class="sk" style="--i:{i}" aria-hidden="true"><i></i><b></b><b></b></span>{/each}</li>
 {/snippet}
+<!-- a network in the menu: pick it, see what it holds (once checked), ★ it onto the ring -->
+{#snippet netRow(c: Chain)}
+  {@const st = loadState[hk(acc, c)]}
+  {@const w = netWorth(c)}
+  <div class="mrow">
+    <button class="mi" class:cur={c.id === chainId} onclick={() => setChain(c.id)}>
+      {@render chainDot(c)}<span class="nn">{c.name}{#if c.test}<em>{t('net.testTag')}</em>{/if}</span>
+      <span class="nv" class:faint={w === '0' || (!!st && st !== 'loading')}>{st === 'loading' ? '…' : st ? t('net.noAnswer') : w}</span>
+    </button>
+    {#if !c.test}<button class="star" class:on={fav.includes(c.id)} onclick={() => toggleFav(c.id)} aria-pressed={fav.includes(c.id)} aria-label={t(fav.includes(c.id) ? 'net.unstar' : 'net.star', { net: c.name })} title={t(fav.includes(c.id) ? 'net.unstar' : 'net.star', { net: c.name })}><Icon name="star" size={16} /></button>{/if}
+  </div>
+{/snippet}
 {#snippet chainDot(c: Chain)}<span class="cdot" class:test={c.test} class:real={!c.test}></span>{/snippet}
 {#snippet tokIcon(c: Card)}<span class="ticon"><img src={iconURL(c)} alt="" /></span>{/snippet}
 {#snippet swapIcon(id: string)}{#if tokens.find(c => idOf(c) === id)}{@render tokIcon(tokens.find(c => idOf(c) === id)!)}{:else}<span class="ticon"><img use:remoteIcon={picked[id]?.icon ?? null} alt="" /></span>{/if}{/snippet}
@@ -909,27 +967,25 @@
           <div class="menu panel net-menu" role="dialog" aria-label={t('net.title')} in:pop out:pop={{ out: true }} use:dragDown={() => (menu = '')}>
             <span class="grab" aria-hidden="true"></span>
             {#if !addingNet}
-              <p class="mh">{t('net.main')}</p>
-              {#each visibleChains.filter(c => !c.test) as c (c.id)}
-                <button class="mi" class:cur={c.id === chainId} onclick={() => setChain(c.id)}>
-                  {@render chainDot(c)}<span>{c.name}</span>{#if c.id === chainId}<Icon name="check" size={16} />{/if}
-                </button>
-              {/each}
-              {#if extraChains.length}
-                <button class="mi more" class:open={moreNets} onclick={() => (moreNets = !moreNets)} aria-expanded={moreNets}><span>{t('net.more', { n: extraChains.length })}</span><Icon name="chevron" size={14} /></button>
-                {#if moreNets}
-                  <div class="more-list" transition:slide={{ duration: still() ? 0 : 220 }}>
-                    {#each extraChains as c (c.id)}<button class="mi" onclick={() => pickMore(c.id)}>{@render chainDot(c)}<span>{c.name}</span></button>{/each}
-                  </div>
+              <div class="nhead">
+                <input class="fi" bind:value={netQ} use:focusDesktop placeholder={t('net.search')} aria-label={t('net.search')} spellcheck="false" autocomplete="off"
+                  onkeydown={e => e.key === 'Enter' && netFound[0] && setChain(netFound[0].id)} />
+                {#if !netQ.trim()}<button class="tag" onclick={checkAll} disabled={checking}>{checking ? t('net.checking') : t('net.checkAll')}</button>{/if}
+              </div>
+              {#if netQ.trim()}
+                {#each netFound as c (c.id)}{@render netRow(c)}{:else}<p class="mh">{t('net.none')}</p>{/each}
+              {:else}
+                <p class="mh">{t('net.fav')}</p>
+                {#each favNets as c (c.id)}{@render netRow(c)}{/each}
+                {#if moneyNets.length}<p class="mh">{t('net.money')}</p>{#each moneyNets as c (c.id)}{@render netRow(c)}{/each}{/if}
+                {#if restNets.length}
+                  <button class="mi more" class:open={moreNets} onclick={() => (moreNets = !moreNets)} aria-expanded={moreNets}><span>{t('net.rest', { n: restNets.length })}</span><Icon name="chevron" size={14} /></button>
+                  {#if moreNets}<div class="more-list" transition:slide={{ duration: still() ? 0 : 220 }}>{#each restNets as c (c.id)}{@render netRow(c)}{/each}</div>{/if}
                 {/if}
-              {/if}
-              {#if showTest}
-                <p class="mh">{t('net.test')}</p>
-                {#each visibleChains.filter(c => c.test) as c (c.id)}
-                  <button class="mi" class:cur={c.id === chainId} onclick={() => setChain(c.id)}>
-                    {@render chainDot(c)}<span>{c.name}</span><em>{t('net.testTag')}</em>{#if c.id === chainId}<Icon name="check" size={16} />{/if}
-                  </button>
-                {/each}
+                {#if showTest}
+                  <p class="mh">{t('net.test')}</p>
+                  {#each chainList.filter(c => c.test) as c (c.id)}{@render netRow(c)}{/each}
+                {/if}
               {/if}
               <label class="toggle"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
               <button class="mi add" onclick={() => (addingNet = true)}><Icon name="plus" size={16} />{t('net.add')}</button>
@@ -1304,8 +1360,6 @@
         <div class="set"><span>{t('set.lang')}</span><span class="val">Русский</span></div>
         <!-- «Фон» hidden (owner 10.10: the backgrounds are being redone from scratch; one stays meanwhile) -->
         <label class="set"><span>{t('net.showTest')}</span><input type="checkbox" class="sw" bind:checked={showTest} /></label>
-        {#if pinned.length}<div class="set"><span>{t('set.nets')}</span>
-          <div class="chips">{#each chainList.filter(c => pinned.includes(c.id)) as c (c.id)}<button class="tag" onclick={() => unpin(c.id)} aria-label={`${c.name}: убрать`}>{c.name}<Icon name="close" size={12} /></button>{/each}</div></div>{/if}
         <label class="set"><span>{t('set.usd')}</span><input type="checkbox" class="sw" checked={showUsd} onchange={e => setShowUsd(e.currentTarget.checked)} /></label>
         <div class="set"><span>{t('set.pass')}<small class:warn={vaultOpen}>{vaultOpen ? t('set.passOff') : t('set.passOn')}</small></span>
           <button class="btn small" onclick={e => openSheet('password', e)} disabled={!!sheet}>{vaultOpen ? t('set.passSet') : t('set.passChange')}</button>
@@ -1494,11 +1548,20 @@
   .mi :global(svg) { margin-left: auto; }
   .mi .mono { font-size: 12px; margin-left: auto; }
   .mi.add { color: var(--ink-2); padding-left: 8px; }
-  .net-menu { max-height: calc(100vh - 90px); overflow-y: auto; overscroll-behavior: contain; } /* twenty networks: the list scrolls inside, the window never does */
+  .net-menu { min-width: 340px; max-height: calc(100vh - 90px); overflow-y: auto; overscroll-behavior: contain; } /* twenty networks: the list scrolls inside, the window never does */
   .mi.more { color: var(--ink-2); padding-left: 36px; }
   .mi.more :global(svg) { transition: transform 220ms cubic-bezier(.32,.9,.18,1); }
   .mi.more.open :global(svg) { transform: rotate(180deg); }
   .more-list { display: grid; gap: 2px; }
+  .nhead { display: flex; gap: 8px; align-items: center; padding: 2px 2px 6px; }
+  .nhead .fi { flex: 1; }
+  .nhead .tag { flex: none; min-height: 40px; }
+  .nn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nv { margin-left: auto; padding-left: 12px; font-size: 13px; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .star { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--ink-3); cursor: pointer; transition: color 160ms ease, background-color 160ms ease; }
+  .star:hover { color: var(--ink); background: rgb(238 235 229 / .06); }
+  .star.on { color: var(--ink-3); } /* filled = on the ring; quiet: nine bright stars were the loudest thing in the menu */
+  .star.on :global(svg) { fill: currentColor; }
   .mi.add :global(svg) { margin-left: 0; }
   .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 0 10px 0 36px; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
   .netform { display: grid; gap: 8px; padding: 4px; }
