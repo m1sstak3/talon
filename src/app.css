@@ -138,6 +138,23 @@ input::placeholder { color: var(--ink-3); }
 @keyframes vt-gone { to { opacity: 0; } }
 @keyframes vt-come { from { opacity: 0; } }
 
+/* phone (owner 11.10: «не выглядит плавно»): the system's own moves, not a page's fade-and-rise. Material shared axis:
+   deeper = the new screen comes 32px from the right as the old leaves left; back = mirrored; tabs = fade through */
+@media (max-width: 860px) {
+  :root[data-nav=push]::view-transition-old(col) { animation: nav-out-l 180ms cubic-bezier(.4, 0, 1, 1) both; }
+  :root[data-nav=push]::view-transition-new(col) { animation: nav-in-r 300ms var(--ease-out) 40ms both; }
+  :root[data-nav=pop]::view-transition-old(col) { animation: nav-out-r 180ms cubic-bezier(.4, 0, 1, 1) both; }
+  :root[data-nav=pop]::view-transition-new(col) { animation: nav-in-l 300ms var(--ease-out) 40ms both; }
+  :root[data-nav=tab]::view-transition-old(col) { animation: vt-gone 90ms linear both; }
+  :root[data-nav=tab]::view-transition-new(col) { animation: nav-in-fade 210ms var(--ease-out) 60ms both; }
+  ::view-transition-group(sym) { animation-duration: 340ms; } /* the ticker lands with the screen, not after it */
+}
+@keyframes nav-out-l { to { opacity: 0; transform: translateX(-32px); } }
+@keyframes nav-out-r { to { opacity: 0; transform: translateX(32px); } }
+@keyframes nav-in-r { from { opacity: 0; transform: translateX(32px); } }
+@keyframes nav-in-l { from { opacity: 0; transform: translateX(-32px); } }
+@keyframes nav-in-fade { from { opacity: 0; transform: scale(.98); } }
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
   .line > span, .appear { animation: fade 120ms ease backwards; }

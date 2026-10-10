@@ -454,8 +454,11 @@
     vtId = shared
     const d = document as Document & { startViewTransition?: (f: () => Promise<void>) => unknown }
     if (!d.startViewTransition || still()) { change(); return }
-    d.startViewTransition(async () => { change(); await tick() })
+    const from = view
+    // the phone moves like its system: deeper slides in from the side, back slides out, tabs just cross over (app.css)
+    d.startViewTransition(async () => { change(); document.documentElement.dataset.nav = DEPTH[view] > DEPTH[from] ? 'push' : DEPTH[view] < DEPTH[from] ? 'pop' : 'tab'; await tick() })
   }
+  const DEPTH: Record<View, number> = { locked: 0, home: 0, history: 0, addresses: 0, settings: 0, addon: 0, token: 1, receive: 2, send: 2, swap: 2 }
   let before: View = 'home' // where settings opened from: the gear closes them back there
   function go(v: View) {
     menu = ''
