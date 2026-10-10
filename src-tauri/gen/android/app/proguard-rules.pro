@@ -19,3 +19,10 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# ML Kit (the QR scanner) creates its components by reflection: release shrinking must keep them whole
+# (0.4.0 release: "NoSuchMethodException ... BarcodeRegistrar.<init>" without this)
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_** { *; }
+# our own bridges are reached from the page and from the core by name
+-keep class io.github.m1sstak3.talon.AppBridge { *; }
+-keep class io.github.m1sstak3.talon.SecretClip { *; }
