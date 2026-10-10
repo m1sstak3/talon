@@ -578,7 +578,7 @@ pub async fn track(sig: &str, c: Cluster, last_valid: u64, on_confirmed: impl Fn
     Outcome::Unknown
 }
 #[derive(Serialize)]
-pub struct Sig { sig: String, time: Option<i64>, ok: bool }
+pub struct Sig { pub sig: String, time: Option<i64>, ok: bool }
 
 /// last signatures that touched an address (newest first). Amounts need the full transaction: later.
 pub async fn history(address: &str, c: Cluster) -> Result<Vec<Sig>, String> {

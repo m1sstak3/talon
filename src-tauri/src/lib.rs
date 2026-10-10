@@ -799,6 +799,13 @@ fn agent_state(app: AppHandle, state: tauri::State<App>) -> Result<serde_json::V
 }
 #[tauri::command]
 fn agent_access(app: AppHandle, on: bool) -> Result<bool, String> { agent_switch(&app, on)?; Ok(on) }
+/// where the installed AI bridge and its manual are: the connect lines in Settings «ИИ-помощник»
+#[tauri::command]
+fn agent_paths(app: AppHandle) -> Result<serde_json::Value, String> {
+    let d = app.path().resource_dir().map_err(|_| "нет папки программы".to_string())?.join("agent");
+    let show = |p: PathBuf| p.to_string_lossy().trim_start_matches(r"\\?\").to_string(); // Windows' long-path prefix means nothing to a person
+    Ok(serde_json::json!({ "mcp": show(d.join("talon-mcp.mjs")), "skill": show(d.join("SKILL.md")) }))
+}
 
 // ---------------------------------------------------------------- folders and hand-made batches (folders.rs)
 fn folders_file(app: &AppHandle) -> Result<PathBuf, String> { Ok(vault_path(app)?.with_file_name("folders.json")) }
@@ -897,7 +904,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret, bio_state, bio_enable, bio_unlock, bio_disable,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
-            agent_state, agent_access, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan,
+            agent_state, agent_access, agent_paths, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan,
             addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,
             sol_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])

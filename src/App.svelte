@@ -285,7 +285,8 @@
     hero?.rest(true)
   }
   // ---------------------------------------------------------------- agent access: a request from an agent waits for the owner
-  let agentOn = $state(false), agentReq = $state<Batch | null>(null)
+  let agentOn = $state(false), agentReq = $state<Batch | null>(null), agentPaths = $state<{ mcp: string; skill: string } | null>(null)
+  $effect(() => { if (agentOn && !agentPaths && coreAvailable()) invoke<{ mcp: string; skill: string }>('agent_paths').then(p => (agentPaths = p), () => {}) })
   function showBatch(b: Batch) {
     const known = accountList.some(a => a.solana === b.to) || contactList.some(c => c.address === b.to)
     agentReq = { ...b, known }
@@ -1488,7 +1489,17 @@
         {#if feeInfo?.missing && vaultAccounts.some(a => a.solana === feeInfo?.owner)}<!-- a one-time setup for the app owner (his vault holds the fee account); gone once done, users never see it --><div class="set"><span>{t('fee.title')}<small>{feeInfo.missing ? t('fee.missing') : t('fee.ready', { acc: feeName })}</small></span>
           {#if feeInfo.missing}<button class="btn small" onclick={setupFee} disabled={!!sheet || preparing || !acc || !!acc.watch}>{preparing ? t('send.preparing') : t('fee.setup')}</button>{/if}
         </div>{/if}
-        {#if !/Android/i.test(navigator.userAgent)}<label class="set"><span>{t('agent.title')}<small>{t('agent.note')}</small></span><input type="checkbox" class="sw" checked={agentOn} onchange={e => setAgent(e.currentTarget.checked)} /></label>{/if}
+        {#if !/Android/i.test(navigator.userAgent)}<label class="set"><span>{t('agent.title')}<small>{t('agent.note')}</small></span><input type="checkbox" class="sw" checked={agentOn} onchange={e => setAgent(e.currentTarget.checked)} /></label>
+          {#if agentOn && agentPaths}
+            <!-- one line to paste into a terminal: the AI client starts our bridge itself; the manual tells it the rules -->
+            <div class="aiconn" transition:slide={{ duration: still() ? 0 : 220 }}>
+              {#each [['agent.claude', `claude mcp add talon -- node "${agentPaths.mcp}"`], ['agent.codex', `codex mcp add talon -- node "${agentPaths.mcp}"`], ['agent.skill', agentPaths.skill]] as [k, line]}
+                <div class="aline"><span class="label">{t(k as Parameters<typeof t>[0])}</span>
+                  <button class="acopy mono" onclick={() => copy(line)} title={t('agent.copyLine')}>{line}</button>{#if copied === line}<span class="ok">{t('act.copied')}</span>{/if}</div>
+              {/each}
+              <p class="faint small">{t('agent.node')}</p>
+            </div>
+          {/if}{/if}
         {#if !/Android/i.test(navigator.userAgent)}<div class="set addons"><span>{t('addon.title')}<small>{t('addon.note')}</small></span>
           <label class="btn small">{t('addon.install')}<input type="file" accept=".html,text/html" hidden onchange={pickAddon} /></label>
         </div>
@@ -1688,6 +1699,9 @@
   .mi.fdr { color: var(--ink-2); padding-left: 8px; }
   .mi.fdr :global(svg) { margin-left: 0; }
   .mi.fdr .faint { margin-left: auto; font-size: 13px; }
+  .aiconn { display: grid; gap: 12px; padding: 4px 0 16px; border-bottom: 1px solid var(--line); }
+  .aline { display: grid; gap: 4px; }
+  .aline .acopy { margin-top: 0; padding: 8px 12px; font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
   .fedit { display: grid; gap: 16px; }
   .fedit > label { display: grid; gap: 8px; }
   .fedit .sets { margin: 0; }

@@ -519,6 +519,18 @@ pub fn export(path: &Path, pass: &str, id: &str) -> Result<Export, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E2E_VAULT=<path> cargo test --lib e2e_open_vault -- --ignored : a throwaway OPEN vault (public BIP39 test phrase,
+    /// three accounts) that the dev app unlocks at start, for driving the AI bridge without the window
+    #[test]
+    #[ignore]
+    fn e2e_open_vault() {
+        let p = std::path::PathBuf::from(std::env::var("E2E_VAULT").expect("E2E_VAULT"));
+        let _ = std::fs::remove_file(&p);
+        let a = create(&p, Source::Phrase("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"), "E2E", "", KDF_DEFAULT).unwrap();
+        add_account(&p, &a[0].wallet, "Ферма 1", "").unwrap();
+        add_account(&p, &a[0].wallet, "Ферма 2", "").unwrap();
+    }
     const CHEAP: Kdf = Kdf { m: 64, t: 1, p: 1 };
     const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 

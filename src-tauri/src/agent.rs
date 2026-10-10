@@ -185,6 +185,15 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
     use tauri::{Emitter, Manager};
     let st = app.state::<crate::App>();
     if !st.agent.lock().unwrap().on { return Err("доступ агента выключен в настройках кошелька".into()) }
+    // the one call that works while locked: an agent learns why it cannot read yet, and whether a request still waits
+    if method == "status" {
+        let unlocked = st.session.lock().unwrap().unlocked;
+        let mut h = st.agent.lock().unwrap();
+        let w = h.live().map(|p| json!({ "id": p.id, "by": if p.owner { "owner" } else { "agent" }, "transfers": p.rows.len() }));
+        return Ok(json!({ "unlocked": unlocked, "waiting": w, "version": env!("CARGO_PKG_VERSION"),
+            "can": ["read accounts, folders, balances (Solana and EVM), history", "request SOL transfers from own accounts to one address (the owner confirms)"],
+            "cannot": ["sign", "export keys or words", "send tokens or EVM coins yet", "change settings"] }))
+    }
     let accounts = {
         let s = st.session.lock().unwrap();
         if !s.unlocked { return Err("кошелёк заблокирован: попросите владельца открыть его".into()) }
@@ -234,6 +243,39 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
         "request_status" => Ok(status(&st.agent, p["id"].as_str().unwrap_or("")).await),
         // the owner's folders: named groups of account ids (own and watch-only); sources for a request come from here
         "folders" => Ok(json!(crate::folders::read(&crate::vault_path(app)?.with_file_name("folders.json"))?)),
+        "networks" => Ok(json!({ "solana": if cfg!(debug_assertions) { json!(["mainnet", "devnet", "local"]) } else { json!(["mainnet", "devnet"]) }, "evm": crate::evm::networks() })),
+        "evm_balances" => {
+            let q = p["network"].as_str().ok_or("network: chain id or name of an EVM network (see networks)")?;
+            let (id, url) = crate::evm::find(q).ok_or("такой EVM-сети кошелёк не знает (см. networks)")?;
+            let want = p["account"].as_str();
+            let mut out = Vec::new();
+            for a in accounts.iter().filter(|a| a.evm.is_some() && want.is_none_or(|w| w == a.id || Some(w) == a.evm.as_deref())) {
+                let addr = a.evm.clone().unwrap_or_default();
+                out.push(match crate::evm::watch(url, id, &addr).await {
+                    Ok(w) => json!({ "account": a.id, "name": a.name, "address": addr, "watch": w }),
+                    Err(e) => json!({ "account": a.id, "name": a.name, "address": addr, "error": e }), // one node failing never hides the rest
+                });
+            }
+            Ok(json!({ "chainId": id, "accounts": out, "note": "wei and token amounts are integers in base units; watch.native names the coin" }))
+        }
+        "history" => {
+            let who = p["account"].as_str().ok_or("account: id or address of an own account")?;
+            let a = accounts.iter().find(|a| a.id == who || a.solana == who || a.evm.as_deref() == Some(who)).ok_or("такого счёта в кошельке нет")?;
+            let n = p["limit"].as_u64().unwrap_or(10).clamp(1, 20) as usize;
+            let net = p["network"].as_str().unwrap_or("mainnet");
+            if let Ok(c) = Cluster::parse(net) {
+                let mut out = Vec::new();
+                for s in solana::history(&a.solana, c).await?.into_iter().take(n) {
+                    out.push(match solana::tx(&s.sig, &a.solana, c).await { Ok(t) => json!(t), Err(_) => json!(s) }); // details when the node gives them
+                }
+                return Ok(json!({ "network": c.name(), "address": a.solana, "transactions": out, "note": "amounts in base units; incoming true = received" }))
+            }
+            let (id, _) = crate::evm::find(net).ok_or("network: mainnet, devnet or an EVM network (see networks)")?;
+            let addr = a.evm.clone().ok_or("у этого счёта нет EVM-адреса")?;
+            let mut list = crate::evm::history(id, &addr).await?;
+            list.truncate(n);
+            Ok(json!({ "chainId": id, "address": addr, "transactions": list }))
+        }
         _ => Err(format!("нет такого метода: {method}")),
     }
 }
