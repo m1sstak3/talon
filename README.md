@@ -31,12 +31,13 @@ No need to build anything.
   marketplaces) and revoke them.
 - **Ledger** (Solana app, USB): add a Ledger account, sign on the device; nothing secret is stored.
 - **AI assistant** (optional, off by default): a local MCP server for Claude Code, Codex or any MCP client. The agent
-  reads accounts, folders, balances on every network and history, and may *request* SOL transfers; you confirm them in
-  the wallet with your password. Agents never sign or see keys. The server hands every client strict rules, and
+  reads accounts, folders, balances on every network and history, and may *request* transfers — SOL, Solana tokens, EVM
+  coins and listed stablecoins, from many accounts to one address — which you confirm in the wallet with your password
+  (for an address never used before you also type its last 4 characters). Agents never sign or see keys. The server hands every client strict rules, and
   [`agent/SKILL.md`](agent/SKILL.md) is a full operating manual. Settings → «ИИ-помощник» gives the one-line connect command.
 - **Add-ons**: your own tab in the wallet from one HTML file (your team's wallets, a project dashboard, a sweep tool).
   Sandboxed, permissions shown before install, never sees keys or the password; with its own permission it may
-  *propose* a transfer that you confirm in the wallet's window. Guide: [`docs/ADDONS.md`](docs/ADDONS.md), samples:
+  *propose* a transfer (SOL or a Solana token) that you confirm in the wallet's window. Guide: [`docs/ADDONS.md`](docs/ADDONS.md), samples:
   [`addons/hello.html`](addons/hello.html), [`addons/sweep.html`](addons/sweep.html).
 - 12-word wallets compatible with Phantom and MetaMask (same derivation paths), key import, watch-only addresses.
 

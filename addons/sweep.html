@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- A Talon add-on: collect SOL from every account of a folder into one address. It only PROPOSES the batch:
+<!-- A Talon add-on: collect SOL or one token from every account of a folder into one address. It only PROPOSES the batch:
      the wallet shows the plan in its own window and the owner confirms it with the password. Guide: docs/ADDONS.md -->
 <html lang="ru">
 <head>
@@ -9,8 +9,8 @@
 {
   "id": "sweep",
   "name": "Сбор",
-  "version": "1.0.0",
-  "description": "Собирает SOL со всех счетов папки на один адрес — вы подтверждаете в кошельке",
+  "version": "1.1.0",
+  "description": "Собирает SOL или токен со всех счетов папки на один адрес — вы подтверждаете в кошельке",
   "permissions": ["accounts", "balances", "transfer"],
   "hosts": []
 }
@@ -34,6 +34,7 @@
 <body>
 <h1>Сбор с папки</h1>
 <label>Папка<select id="folder"></select></label>
+<label>Что собрать<select id="asset"></select></label>
 <ul id="list"></ul>
 <label>Куда собрать (адрес Solana)<input id="to" spellcheck="false" autocomplete="off" placeholder="Адрес"></label>
 <button id="go" disabled>Предложить перевод</button>
@@ -55,6 +56,8 @@
   // ---- the add-on
   const $ = id => document.getElementById(id)
   let folders = [], rows = []
+  // what an account holds of the chosen asset: SOL, or a token the wallet knows by name (an unnamed airdrop is never offered)
+  const held = r => !$('asset').value ? r.sol : (r.tokens.find(t => t.mint === $('asset').value)?.amount ?? 0)
   const say = (t, bad = false) => { $('msg').textContent = t; $('msg').className = bad ? 'note err' : 'note' }
   async function load() {
     try {
@@ -68,24 +71,34 @@
     const f = folders[$('folder').value]
     if (!f) return
     rows = (await talon('balances', { addresses: f.accounts.map(a => a.solana) })).rows // the wallet's own Solana node
+    const was = $('asset').value
+    const named = new Map(rows.flatMap(r => r.tokens).filter(t => t.symbol && t.amount > 0).map(t => [t.mint, t.symbol]))
+    $('asset').replaceChildren(Object.assign(document.createElement('option'), { value: '', textContent: 'SOL' }),
+      ...[...named].map(([mint, sym]) => Object.assign(document.createElement('option'), { value: mint, textContent: sym })))
+    $('asset').value = named.has(was) ? was : ''
+    list()
+  }
+  function list() {
+    const f = folders[$('folder').value], sym = $('asset').selectedOptions[0]?.textContent ?? 'SOL'
     $('list').replaceChildren(...f.accounts.map((a, i) => {
       const li = document.createElement('li')
       li.innerHTML = '<span></span><span class="mono"></span>'
       li.firstChild.textContent = a.name
-      li.lastChild.textContent = rows[i].sol === null ? '—' : rows[i].sol.toLocaleString('ru-RU', { maximumFractionDigits: 4 }) + ' SOL'
+      li.lastChild.textContent = rows[i].sol === null ? '—' : held(rows[i]).toLocaleString('ru-RU', { maximumFractionDigits: 4 }) + ' ' + sym
       return li
     }))
     check()
   }
-  const check = () => { $('go').disabled = !$('to').value.trim() || !rows.some(r => r.sol > 0) }
+  const check = () => { $('go').disabled = !$('to').value.trim() || !rows.some(r => held(r) > 0) }
   $('folder').onchange = show
+  $('asset').onchange = list
   $('to').oninput = check
   $('go').onclick = async () => {
     const f = folders[$('folder').value], to = $('to').value.trim()
-    // empty accounts would fail a «max» transfer: only those with SOL go into the proposal
-    const sources = f.accounts.filter((a, i) => rows[i].sol > 0 && a.solana !== to).map(a => ({ address: a.solana, amount: 'max' }))
+    // empty accounts would fail a «max» transfer: only those holding the asset (and SOL for the fee) go into the proposal
+    const sources = f.accounts.filter((a, i) => held(rows[i]) > 0 && rows[i].sol > 0 && a.solana !== to).map(a => ({ address: a.solana, amount: 'max' }))
     $('go').disabled = true; say('Ждём подтверждения в окне кошелька…')
-    try { const r = await talon('requestTransfer', { to, sources }); say(r.confirmed ? 'Подтверждено: переводы ушли в сеть.' : 'Отклонено: ничего не отправлено.') }
+    try { const r = await talon('requestTransfer', { to, sources, ...($('asset').value ? { token: $('asset').value } : {}) }); say(r.confirmed ? 'Подтверждено: переводы ушли в сеть.' : 'Отклонено: ничего не отправлено.') }
     catch (e) { say(e.message, true) }
     finally { check(); show() }
   }
