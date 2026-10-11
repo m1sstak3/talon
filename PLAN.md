@@ -93,6 +93,11 @@ Mainnet gate (history): ~~durable pending-send record + restart recovery~~; ~~de
   permission, sheet titled with the add-on, closing = reject; addons/sweep.html); 17 EVM networks; TON read-only (v4R2,
   Trust Wallet path). Security review by a second agent: no way to sign other than the sheet; fixes in ecb1158.
   Not yet: SPL token batches, agent/add-on requests for EVM and tokens (t-038), TON sends (t-039), Tron/Bitcoin (t-040).
+- Built 11.10 (0.5.1 → next): one hub for every batch (docs/BATCHES.md «Built»): SOL, Solana tokens, EVM coin / listed
+  token — owner, agent (MCP 0.4.0: `token`, EVM `network`) and add-on (SOL + tokens) alike; requester guards (ordinary
+  wallet recipient, known mints on mainnet, last 4 characters for a never-used address); owner preempts; agent status
+  from the core's trackers. Live on local chains through the real MCP adapter. Not yet: add-on EVM proposals, TON
+  sends (t-039), Tron/Bitcoin (t-040).
 
 **Add-ons («Дополнения»; model for the owner's word, risks checked with Codex 09.10)**
 - Goal: anyone shapes the wallet without touching the core; private integrations ship as add-ons.
