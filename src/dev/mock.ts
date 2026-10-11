@@ -19,7 +19,7 @@ export function install(kind: string) {
   const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
   let agentOn = false, waiting: unknown = null
   // dev: window.__cwBatch() plays an agent's request (3 sources, one destination)
-  ;(globalThis as any).__cwBatch = () => emit('agent-request', waiting = { id: 'b1', network: 'Solana Mainnet', test: false, to: 'Fk7aUsdcDemoMint1111111111111111111111111111', newRecipient: true, open, count: 3, total: '2.49997', fees: '0.000015',
+  ;(globalThis as any).__cwBatch = () => emit('agent-request', waiting = { id: 'b1', network: 'Solana Mainnet', test: false, to: 'Fk7aUsdcDemoMint1111111111111111111111111111', newRecipient: true, askTail: true, open, count: 3, total: '2.49997', fees: '0.000015',
     rows: [{ name: 'Основной', from: acc.solana, balance: '1.25', amount: '0.5', fee: '0.000005', left: '0.749995' }, { name: 'Копилка', from: '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM', balance: '1', amount: '0.999995', fee: '0.000005', left: '0' }, { name: 'Старый', from: 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk', balance: '1', amount: '0.999995', fee: '0.000005', left: '0' }] })
   const changed = () => setTimeout(() => emit('vault-changed', { accounts, unlocked }))
   mockIPC(async (cmd, a: any) => {
@@ -35,7 +35,7 @@ export function install(kind: string) {
         await wait(700)
         const evm = /^\d+$/.test(a.network), tok = !!a.token, n = a.sources.length, row = (x: any) => accounts.find(y => y.id === x.account) as any
         const amt = tok ? '25' : evm ? '0.4' : '0.4', fee = evm ? '0.0000021' : '0.000005'
-        return waiting = { id: 'b2', by: a.addon ? 'addon' : 'owner', byName: a.addon ? 'Сбор' : undefined, network: evm ? 'Base' : 'Solana Mainnet', test: false, to: a.to, newRecipient: !!a.addon, open, count: n,
+        return waiting = { id: 'b2', by: a.addon ? 'addon' : 'owner', byName: a.addon ? 'Сбор' : undefined, network: evm ? 'Base' : 'Solana Mainnet', test: false, to: a.to, newRecipient: !!a.addon, askTail: !!a.addon, open, count: n,
           total: String(n * Number(amt)), sym: tok ? 'USDC' : evm ? 'ETH' : 'SOL', fees: (n * Number(fee)).toFixed(7), feeSym: evm ? 'ETH' : 'SOL', feeMax: evm || tok,
           rows: a.sources.map((x: any) => ({ name: row(x)?.name ?? x.account, from: (evm ? row(x)?.evm : row(x)?.solana) ?? '', amount: amt, fee, ...(evm || tok ? {} : { balance: '0.400005', left: '0' }) })) }
       }
@@ -50,7 +50,7 @@ export function install(kind: string) {
       case 'batch_reject': waiting = null; return null
       case 'batch_confirm': { // a requester's plan to a new address: its last 4 characters, as the core asks
         const w = waiting as any
-        if (w && w.by !== 'owner' && w.newRecipient && (a.tail ?? '').trim() !== w.to.slice(-4)) throw 'введите последние 4 знака адреса получателя — так видно, что адрес тот'
+        if (w?.askTail && (a.tail ?? '').trim() !== w.to.slice(-4)) throw 'введите последние 4 знака адреса получателя — так видно, что адрес тот'
         await wait(900); if (!open && a.pass !== 'demo-pass') throw 'неверный пароль'; waiting = null; return { sent: 3, total: 3, errors: [] }
       }
       case 'clip_secret': await navigator.clipboard.writeText(a.text).catch(() => {}); return 30

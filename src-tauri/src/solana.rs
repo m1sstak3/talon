@@ -295,8 +295,11 @@ async fn account(http: &reqwest::Client, c: Cluster, addr: &str) -> Result<Optio
     let Some(v) = r.get("value").filter(|v| !v.is_null()) else { return Ok(None) };
     Ok(Some(Raw { owner: v["owner"].as_str().unwrap_or("").into(), exec: v["executable"].as_bool() == Some(true), data: b64(&v["data"]).ok_or("bad account answer")? }))
 }
-/// an ordinary wallet: empty, or owned by the system program (not a token account, not a program's account)
+/// an ordinary wallet: a key on the curve (a program-derived address has none), empty or owned by the system program
+/// (not a token account, not a program's account)
 pub async fn plain_wallet(addr: &str, c: Cluster) -> Result<bool, String> {
+    let on_curve = bs58::decode(addr).into_vec().ok().and_then(|v| <[u8; 32]>::try_from(v).ok()).is_some_and(|k| ed25519_dalek::VerifyingKey::from_bytes(&k).is_ok());
+    if !on_curve { return Ok(false) }
     let http = client()?;
     guard(&http, c).await?;
     Ok(account(&http, c, addr).await?.is_none_or(|a| a.owner == SYSTEM && !a.exec))
@@ -441,6 +444,7 @@ fn receivable(t: &spl_token_2022_interface::extension::StateWithExtensions<spl_t
     Ok(())
 }
 
+const UNCHECKED: &str = "Сеть не смогла проверить перевод заранее: он может не пройти.";
 /// blockhash, exact message, network fee, and the SOL balance check (`sol_out` = lamports leaving besides the fee)
 async fn seal(http: &reqwest::Client, d: &mut Draft, payer: &solana_address::Address, ixs: &[solana_instruction::Instruction], sol_out: u64, rent0: u64, price: Option<u64>) -> Result<(), String> {
     let c = d.cluster;
@@ -471,7 +475,7 @@ async fn seal(http: &reqwest::Client, d: &mut Draft, payer: &solana_address::Add
     match rpc(http, c, "simulateTransaction", json!([base64::engine::general_purpose::STANDARD.encode(wire), { "encoding": "base64", "sigVerify": false, "commitment": "confirmed" }])).await {
         Ok(r) if r["value"]["err"].is_null() => {}
         Ok(r) => return Err(format!("сеть отклонила бы этот перевод: {}", sim_reason(&r["value"]))),
-        Err(_) => if d.warn.is_none() { d.warn = Some("Сеть не смогла проверить перевод заранее: он может не пройти.") },
+        Err(_) => if d.warn.is_none() { d.warn = Some(UNCHECKED) },
     }
     Ok(())
 }
@@ -506,7 +510,7 @@ pub async fn refresh(d: &Draft) -> Result<Draft, String> {
     match rpc(&http, c, "simulateTransaction", json!([base64::engine::general_purpose::STANDARD.encode(wire), { "encoding": "base64", "sigVerify": false, "commitment": "confirmed" }])).await {
         Ok(r) if r["value"]["err"].is_null() => Ok(out),
         Ok(r) => Err(format!("сеть отклонила бы этот перевод: {}", sim_reason(&r["value"]))),
-        Err(_) if d.warn.is_some() => Ok(out), // the plan already said the node could not check it
+        Err(_) if d.warn == Some(UNCHECKED) => Ok(out), // the plan already said the node could not check it
         Err(_) => Err("сеть не смогла проверить перевод сейчас".into()),
     }
 }

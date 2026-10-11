@@ -122,16 +122,19 @@ will refuse anyway).
 6. The plan's `fees` is a ceiling in `feeSym` (the network's coin). If the fees look comparable to the amount, say so
    before asking the owner to confirm.
 
-### 3.3b A new recipient
-If the plan says `newRecipient: true` (the address has never been used on that network), the wallet asks the owner to
+### 3.3b A destination that is not the owner's own account
+If the plan says `askTail: true` (the destination is not one of the owner's accounts), the wallet asks the owner to
 type the **last 4 characters** of the address before confirming. Tell the owner: «Кошелёк попросит ввести последние
 4 знака адреса — сверьте их с тем, откуда вы его взяли». Never tell the owner which 4 characters to type: they read them
-from their own source.
+from their own source. `newRecipient: true` additionally means the address has never been used on that network — say
+so, it is worth a second look.
 
 ### 3.4 Following a request
 1. `wallet_request_status { id }` every 15 seconds (reads that reach the network are limited to 30 a minute).
 2. `waiting` → keep waiting; after ~10 minutes it expires (`closed`, reason) — tell the owner, do not recreate unless asked.
 3. `closed` → report the reason in plain words (rejected by the owner, expired, wallet locked).
+   Top-level `unknown` (the wallet no longer knows this id, e.g. it restarted) → the transfers may have gone: ask the
+   owner to look in the wallet's history. **Never** re-request on `unknown`.
 4. `confirmed` → per transfer: `finalized` = done; `pending`/`confirmed` = keep polling; `failed` (landed, did not
    move the money), `expired` (never landed, nothing moved), `not-sent` (with `error`) = report. `unknown` = the wallet
    lost track (e.g. it restarted): ask the owner to look in the wallet's history, never re-request. Finish with a short

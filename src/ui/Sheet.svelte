@@ -13,6 +13,7 @@
   export interface Batch {
     id: string; network: string; test: boolean; to: string; newRecipient: boolean; open: boolean; count: number; total: string; fees: string
     rows: { name: string; from: string; balance?: string; amount: string; fee: string; left?: string }[]
+    askTail?: boolean // a requester's destination that is not the owner's own: the owner types its last 4 characters
     feeMax?: boolean // the fees are a ceiling (EVM gas; a Solana token's recipient account is paid for once)
     sym?: string; feeSym?: string // what moves and what pays the fees (absent: SOL)
     warn?: string[] // the core's own warnings for any row (a contract recipient, a token its issuer can take back…)
@@ -36,7 +37,7 @@
 
   let { mode: modeIn, wallet = '', account = '', fresh: freshIn = false, open: openIn = false, origin = null, round, draft = null, batch = null, offer = null, onclose }: {
     mode: SheetMode; wallet?: string; account?: string; fresh?: boolean; open?: boolean; origin?: DOMRect | null; round?: number; draft?: Draft | null; batch?: Batch | null; offer?: Offer | null
-    onclose: (done: boolean) => void
+    onclose: (done: boolean, note?: string) => void // note: what did not go (a batch that went only in part)
   } = $props()
   // fixed for the sheet's life: saving a new vault flips `fresh` while the sheet is still folding away
   const { mode: mode0, fresh, open } = untrack(() => ({ mode: modeIn, fresh: freshIn, open: openIn }))
@@ -112,7 +113,7 @@
       await anim([{ opacity: 1 }, { opacity: 0 }], 120, 'ease') // the deal starts as the dot goes out (no dead beat)
     } else await anim([whole, from()], 320, 'cubic-bezier(.6,0,.8,.4)')
     await invoke('panel_secret', { on: false }).catch(() => {})
-    onclose(done)
+    onclose(done, note)
   }
 
   onMount(() => {
@@ -282,15 +283,21 @@
     if (closing) return // closed during the quiet beat
     const pass = conf.open ? '' : p1
     busy = true; err = ''
-    try { await invoke(batch ? 'batch_confirm' : 'send_confirm', batch ? { id: conf.id, pass, tail: needTail ? tail.trim() : null } : { id: conf.id, pass }); busy = false; await close(true) }
+    try {
+      const r = await invoke<{ sent: number; total: number; errors: string[] } | string>(batch ? 'batch_confirm' : 'send_confirm', batch ? { id: conf.id, pass, tail: needTail ? tail.trim() : null } : { id: conf.id, pass })
+      busy = false
+      // a batch whose rows moved while it waited: the rest went, the owner is told which did not (and «sent» only if any did)
+      if (typeof r === 'object' && r.sent < r.total) note = `Ушло ${r.sent} из ${r.total}. ${r.errors.join('; ')}`
+      await close(typeof r !== 'object' || r.sent > 0, true)
+    }
     catch (e) { err = humanErr(e); busy = false; hold = 0 }
   }
 
   // the agent's request: «Отклонить» closes it for good; the cross only hides the sheet (it waits up to 10 minutes)
   async function rejectBatch() { if (!batch || busy) return; await invoke('batch_reject', { id: batch.id }).catch(() => {}); close(false) }
   // an agent's or add-on's plan to an address new on its network: the owner types its last 4 characters (the core checks)
-  let tail = $state('')
-  const needTail = $derived(!!batch && batch.by !== 'owner' && batch.newRecipient)
+  let tail = $state(''), note = ''
+  const needTail = $derived(!!batch?.askTail)
   const ru = (n: string) => n.replace('.', ',') // the core writes 1.5; the screen says 1,5
   const plural = (n: number) => n % 10 === 1 && n % 100 !== 11 ? 'перевод' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'перевода' : 'переводов'
   const shortA = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`

@@ -24,6 +24,7 @@ pub(crate) struct Session {
     pub(crate) unlocked: bool,
     pub(crate) accounts: Vec<vault::Account>, // proven by decryption at unlock/save; the file's header is not trusted after that
     epoch: u64, // bumped by send_cancel / lock: a draft prepared across either is dropped
+    pub(crate) locks: u64, // bumped by every lock: a batch planned across a lock is never stored (lock order: session, then agent)
     pending: Option<Zeroizing<String>>, // a freshly generated phrase while the user writes it down
     send: Option<Send>,                 // the one transfer waiting for confirmation
 }
@@ -254,8 +255,9 @@ fn bio_disable(app: AppHandle) {
 
 #[tauri::command]
 fn vault_lock(state: tauri::State<App>) -> Result<(), String> {
-    { let mut h = state.agent.lock().unwrap(); if let Some(p) = h.waiting.take() { h.close(&p.id, Err("кошелёк заблокирован".into())) } }
     let mut s = state.session.lock().unwrap();
+    { let mut h = state.agent.lock().unwrap(); if let Some(p) = h.waiting.take() { h.close(&p.id, Err("кошелёк заблокирован".into())) } }
+    s.locks += 1;
     s.unlocked = false;
     s.accounts.clear();
     s.pending = None;
@@ -749,6 +751,8 @@ async fn evm_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, p
             other => { s.send = other; return Err(gone()) }
         }
     };
+    // a batch row may have taken this nonce since the draft: never send over it
+    if let Some(d) = ds.first() { if evm::pending_nonce(&d.rpc, &d.from).await? != d.nonce { return Err("счёт успел отправить другой перевод — подготовьте этот заново".into()) } }
     // every key must be the sender the user saw: recover it from each signature before anything leaves the machine
     let mut raws = vec![];
     for ((d, h), (sig, parity)) in ds.iter().zip(&hashes).zip(&sigs) {
@@ -840,12 +844,14 @@ async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: Strin
         Some(id) => { addons::granted(&app, &id, "transfer")?; Some(addons::list(&app)?.into_iter().find(|a| a.m.id == id).map(|a| a.m.name).unwrap_or(id)) }
         None => None,
     };
-    let accounts = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } s.accounts.clone() };
+    let (accounts, locks) = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } (s.accounts.clone(), s.locks) };
     let net = agent::Net::parse(&network)?;
     let busy = || "ждёт подтверждения другой пакет переводов: сначала решите его".to_string();
     if by.is_some() && state.agent.lock().unwrap().live().is_some() { return Err(busy()) }
     let plan = agent::plan(&accounts, &net, &to, token.as_deref(), &sources, rand_id(), by.is_none(), by).await?;
     let v = agent::show(&plan, vault::is_open(&vault_path(&app)?));
+    let s = state.session.lock().unwrap();
+    if !s.unlocked || s.locks != locks { return Err("кошелёк заблокирован".into()) } // locked while the plan was priced
     let mut h = state.agent.lock().unwrap();
     if h.live().is_some() {
         if !plan.owner { return Err(busy()) }
@@ -867,21 +873,27 @@ async fn batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String,
     let gone = || "запрос уже выполнен, отклонён или устарел".to_string();
     if !state.session.lock().unwrap().unlocked { return Err("кошелёк заблокирован".into()) }
     let plan = { let mut h = state.agent.lock().unwrap(); h.live().filter(|p| p.id == id).cloned().ok_or_else(gone)? };
-    if !plan.owner && plan.new_recipient && !agent::tail_ok(&plan.to, tail.as_deref()) { return Err("введите последние 4 знака адреса получателя — так видно, что адрес тот".into()) }
+    if plan.ask_tail && !agent::tail_ok(&plan.to, tail.as_deref()) { return Err("введите последние 4 знака адреса получателя — так видно, что адрес тот".into()) }
     let _one = match plan.body { agent::Body::Evm(_) => Some(EVM_CONFIRM.lock().await), agent::Body::Sol(_) => None }; // nonces: one EVM confirm at a time
     let (signed, mut done) = agent::sign(&plan.body, &vault_path(&app)?, &pass).await?; // wrong password: the plan stays
-    // one-shot: only the caller that takes the plan out of the hub may send
-    { let mut h = state.agent.lock().unwrap(); if !h.waiting.as_ref().is_some_and(|p| p.id == id) { return Err(gone()) } h.waiting = None; }
     let pend: Vec<Pending> = signed.iter().map(|(_, tx)| match tx {
         agent::Tx::Sol(d, sig) => Pending { sig: solana::tx_id(sig), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0, approved: false },
         agent::Tx::Evm(d, raw) => Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce, approved: false },
     }).collect();
-    // all on disk before a single byte goes out
-    if let Err(e) = pending_edit(&app, |l| l.extend(pend.iter().cloned())) { state.agent.lock().unwrap().close(&id, Err("журнал переводов не записан".into())); return Err(format!("переводы не отправлены: {e}")) }
+    let skipped = done.len();
     done.extend(signed.iter().zip(&pend).map(|((a, _), p)| agent::Done { account: a.clone(), sig: Some(p.sig.clone()), error: None, state: "pending" }));
-    let (mut sent, mut errors): (usize, Vec<String>) = (0, done.iter().filter_map(|d| d.error.clone()).collect());
-    state.agent.lock().unwrap().close(&id, Ok(done)); // before the sends: a tracker's first answer must find its row
-    for ((_, tx), p) in signed.iter().zip(pend) {
+    // one-shot: only the caller that takes the plan out of the hub may send; its outcome is recorded in the same breath,
+    // so an agent polling never sees the request vanish (and never re-requests money that is on its way)
+    { let mut h = state.agent.lock().unwrap(); if !h.waiting.as_ref().is_some_and(|p| p.id == id) { return Err(gone()) } h.waiting = None; h.close(&id, Ok(done.clone())); }
+    let name = |acc: &str| state.session.lock().unwrap().accounts.iter().find(|a| a.id == acc).map(|a| a.name.clone()).unwrap_or_default();
+    // all on disk before a single byte goes out
+    if let Err(e) = pending_edit(&app, |l| l.extend(pend.iter().cloned())) {
+        let mut h = state.agent.lock().unwrap();
+        for p in &pend { h.refused(&p.sig, "журнал переводов не записан".into()) }
+        return Err(format!("переводы не отправлены: {e}"))
+    }
+    let (mut sent, mut errors): (usize, Vec<String>) = (0, done[..skipped].iter().map(|d| format!("«{}»: {}", name(&d.account), d.error.clone().unwrap_or_default())).collect());
+    for ((acc, tx), p) in signed.iter().zip(pend) {
         let refused = match tx {
             agent::Tx::Sol(d, sig) => match solana::submit(d, sig).await { solana::Sent::Rejected(e) => Some(e), _ => None },
             agent::Tx::Evm(d, raw) => match evm::submit(&d.rpc, raw).await {
@@ -893,7 +905,7 @@ async fn batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String,
             Some(e) => {
                 let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig));
                 state.agent.lock().unwrap().refused(&p.sig, format!("сеть не приняла: {e}"));
-                errors.push(format!("сеть не приняла: {e}"));
+                errors.push(format!("«{}»: сеть не приняла: {e}", name(acc)));
             }
             None => { sent += 1; follow(app.clone(), p) }
         }

@@ -26,7 +26,7 @@ pub const READS_PER_MIN: usize = 30; // reads that reach a node (balances, histo
 pub enum Body { Sol(Vec<(String, solana::Draft)>), Evm(Vec<(String, evm::Draft)>) }
 /// an immutable plan: the password confirms exactly this; any change = a new request
 #[derive(Clone)]
-pub struct Plan { pub id: String, pub to: String, pub new_recipient: bool, pub body: Body, pub view: Value, pub at: Instant, pub owner: bool, pub addon: Option<String> } // owner: made by hand (a folder); addon: proposed by that add-on
+pub struct Plan { pub id: String, pub to: String, pub ask_tail: bool, pub body: Body, pub view: Value, pub at: Instant, pub owner: bool, pub addon: Option<String> } // ask_tail: the owner types the destination's last 4 characters // owner: made by hand (a folder); addon: proposed by that add-on
 /// what became of one row after the owner confirmed; `state` follows the core's own trackers (lib.rs `told`)
 #[derive(Clone)]
 pub struct Done { pub account: String, pub sig: Option<String>, pub error: Option<String>, pub state: &'static str }
@@ -51,7 +51,8 @@ impl Hub {
         self.waiting.as_ref()
     }
     pub fn close(&mut self, id: &str, r: Result<Vec<Done>, String>) {
-        if self.closed.len() > 50 { self.closed.clear() } // ponytail: forget old outcomes wholesale; agents poll within minutes
+        // forget old outcomes, never one still on its way (an agent that sees «unknown» might ask again)
+        if self.closed.len() > 50 { self.closed.retain(|_, r| r.as_ref().is_ok_and(|rows| rows.iter().any(|d| matches!(d.state, "pending" | "confirmed")))) }
         self.closed.insert(id.into(), r);
     }
     /// a send's state as the core's tracker saw it (status never asks a node)
@@ -112,7 +113,8 @@ impl Net {
 pub async fn plan(accounts: &[crate::vault::Account], net: &Net, to: &str, token: Option<&str>, sources: &[Source], id: String, owner: bool, addon: Option<String>) -> Result<Plan, String> {
     if sources.is_empty() { return Err("нет ни одного счёта-источника".into()) }
     if sources.len() > MAX_SOURCES { return Err(format!("не больше {MAX_SOURCES} счетов в одном запросе")) }
-    let (to, token) = (to.trim(), token.map(str::trim).filter(|t| !t.is_empty()));
+    let to = to.trim();
+    let token = match token.map(str::trim) { Some("") => return Err("token: пусто — уберите его, чтобы переводить монету сети, или укажите токен".into()), t => t };
     let mut seen = HashSet::new();
     let mut own = vec![];
     for s in sources {
@@ -131,6 +133,7 @@ pub async fn plan(accounts: &[crate::vault::Account], net: &Net, to: &str, token
             let (mut rows, mut shown) = (vec![], vec![]);
             for (a, amount) in &own {
                 if a.solana == to { return Err(format!("счёт «{}» и есть получатель", a.name)) }
+                if rows.iter().any(|(_, d): &(String, solana::Draft)| d.from == a.solana) { return Err(format!("адрес счёта «{}» уже есть в пакете", a.name)) }
                 let max = amount.eq_ignore_ascii_case("max");
                 let (d, left) = match token {
                     Some(mint) => {
@@ -157,7 +160,7 @@ pub async fn plan(accounts: &[crate::vault::Account], net: &Net, to: &str, token
             let d0 = &rows[0].1;
             let v = json!({
                 "network": c.label(), "test": !matches!(c, Cluster::Mainnet), "newRecipient": rows.iter().any(|(_, d)| d.new_recipient),
-                "total": solana::units(rows.iter().map(|(_, d)| d.amount).sum(), d0.decimals as u32),
+                "total": solana::units(rows.iter().try_fold(0u64, |s, (_, d)| s.checked_add(d.amount)).ok_or("сумма вышла за пределы")?, d0.decimals as u32),
                 "sym": d0.symbol.map(str::to_string).unwrap_or_else(|| token.unwrap_or_default().to_string()), // a name only from the core's list; else the whole mint
                 "fees": solana::units(rows.iter().map(|(_, d)| d.fee + d.rent).sum(), 9), "feeSym": "SOL", "feeMax": token.is_some(), // a token row's rent is paid once per new recipient
                 "warn": warns(rows.iter().filter_map(|(_, d)| d.warn.map(str::to_string)).collect()), "rows": shown,
@@ -166,7 +169,7 @@ pub async fn plan(accounts: &[crate::vault::Account], net: &Net, to: &str, token
         }
         Net::Evm { chain_id, rpc } => {
             if !evm::valid_address(to) { return Err("получатель: это не адрес EVM".into()) }
-            if !owner && evm::is_contract(rpc, to).await? { return Err("получатель — контракт: по запросу на контракты не отправляем".into()) }
+            if !owner && (to[2..38].bytes().all(|b| b == b'0') || evm::is_contract(rpc, to).await?) { return Err("получатель — контракт или служебный адрес сети: по запросу туда не отправляем".into()) }
             let mut rows: Vec<(String, evm::Draft)> = vec![];
             for (a, amount) in &own {
                 let from = a.evm.clone().ok_or_else(|| format!("у счёта «{}» нет адреса Ethereum", a.name))?;
@@ -180,18 +183,20 @@ pub async fn plan(accounts: &[crate::vault::Account], net: &Net, to: &str, token
             let d0 = &rows[0].1;
             let v = json!({
                 "network": d0.network, "test": d0.test, "newRecipient": rows.iter().any(|(_, d)| d.new_recipient),
-                "total": evm::units(rows.iter().map(|(_, d)| d.amount).sum(), d0.decimals as u32), "sym": d0.symbol,
-                "fees": evm::units(rows.iter().map(|(_, d)| d.fee_max).sum(), 18), "feeSym": d0.native, "feeMax": true,
+                "total": evm::units(rows.iter().try_fold(0u128, |s, (_, d)| s.checked_add(d.amount)).ok_or("сумма вышла за пределы")?, d0.decimals as u32), "sym": d0.symbol,
+                "fees": evm::units(rows.iter().try_fold(0u128, |s, (_, d)| s.checked_add(d.fee_max)).ok_or("плата сети вышла за пределы")?, 18), "feeSym": d0.native, "feeMax": true,
                 "warn": warns(rows.iter().filter_map(|(_, d)| d.warn.clone()).collect()), // the core's own words, never the requester's
                 "rows": rows.iter().zip(&own).map(|((_, d), (a, _))| json!({ "name": a.name, "from": d.from, "amount": evm::units(d.amount, d.decimals as u32), "fee": evm::units(d.fee_max, 18) })).collect::<Vec<_>>(),
             });
             (Body::Evm(rows), v)
         }
     };
-    let new_recipient = v["newRecipient"].as_bool() == Some(true);
-    v["id"] = json!(id); v["to"] = json!(to); v["count"] = json!(own.len());
+    // a requester's destination that is not one of the owner's own accounts: the owner types its last 4 characters (from
+    // their own source). Not tied to «never used»: a requester could dust its own address first (review 11.10)
+    let ask_tail = !owner && !accounts.iter().any(|a| a.solana == to || a.evm.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(to)));
+    v["id"] = json!(id); v["to"] = json!(to); v["count"] = json!(own.len()); v["askTail"] = json!(ask_tail);
     v["by"] = json!(if owner { "owner" } else if addon.is_some() { "addon" } else { "agent" }); v["byName"] = json!(addon);
-    Ok(Plan { id, to: to.into(), new_recipient, body, view: v, at: Instant::now(), owner, addon })
+    Ok(Plan { id, to: to.into(), ask_tail, body, view: v, at: Instant::now(), owner, addon })
 }
 
 /// the owner confirmed: each row refreshed (Solana: a fresh blockhash; EVM: nonce, balance and dry run re-checked) and
@@ -203,9 +208,8 @@ pub async fn sign(body: &Body, vault: &std::path::Path, pass: &str) -> Result<(V
         Body::Sol(rows) => {
             let mut built = vec![];
             for (a, d) in rows { match solana::refresh(d).await { Ok(f) => built.push((a.clone(), f)), Err(e) => skipped.push(skip(a, e)) } }
-            if built.is_empty() { return Ok((out, skipped)) }
             let items: Vec<(&str, &[u8])> = built.iter().map(|(a, d)| (a.as_str(), d.message.as_slice())).collect();
-            let sigs = crate::vault::sign_many(vault, pass, &items)?;
+            let sigs = crate::vault::sign_many(vault, pass, &items)?; // opens the vault even with nothing left to sign: a wrong password never spends a plan
             for ((a, d), sig) in built.into_iter().zip(sigs) {
                 let pk: [u8; 32] = bs58::decode(&d.from).into_vec().ok().and_then(|v| v.try_into().ok()).ok_or("bad sender")?;
                 ed25519_dalek::VerifyingKey::from_bytes(&pk).and_then(|k| k.verify_strict(&d.message, &ed25519_dalek::Signature::from_bytes(&sig)))
@@ -216,7 +220,6 @@ pub async fn sign(body: &Body, vault: &std::path::Path, pass: &str) -> Result<(V
         Body::Evm(rows) => {
             let mut built = vec![];
             for (a, d) in rows { match evm::recheck(d).await { Ok(()) => built.push((a.clone(), d.clone())), Err(e) => skipped.push(skip(a, e)) } }
-            if built.is_empty() { return Ok((out, skipped)) }
             let items: Vec<(&str, [u8; 32])> = built.iter().map(|(a, d)| (a.as_str(), d.hash())).collect();
             let sigs = crate::vault::sign_evm_many(vault, pass, &items)?;
             for ((a, d), (sig, parity)) in built.into_iter().zip(sigs) {
@@ -312,10 +315,10 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
                 "request transfers from own accounts to one address: SOL, Solana tokens, the coin or a listed stablecoin of an EVM network from networks (the owner confirms)"],
             "cannot": ["sign", "export keys or words", "send to a contract or a token account", "TON or networks the owner added by hand", "change settings"] }))
     }
-    let accounts = {
+    let (accounts, locks) = {
         let s = st.session.lock().unwrap();
         if !s.unlocked { return Err("кошелёк заблокирован: попросите владельца открыть его".into()) }
-        s.accounts.clone() // proven at unlock, never the file's unverified header
+        (s.accounts.clone(), s.locks) // proven at unlock, never the file's unverified header
     };
     // the local test chain answers unverified: agents reach it only in development builds
     let net = || Cluster::parse(p["network"].as_str().unwrap_or("mainnet")).and_then(|c| if matches!(c, Cluster::Local) && !cfg!(debug_assertions) { Err("локальная тестовая сеть только в сборке для разработки".into()) } else { Ok(c) });
@@ -342,9 +345,12 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
                 if h.live().is_some() { return Err(busy()) }
                 h.admit(Instant::now())?;
             }
-            let plan = plan(&accounts, &net, to, p["token"].as_str(), &sources, crate::rand_id(), false, None).await?;
+            let token = match &p["token"] { Value::Null => None, Value::String(t) => Some(t.as_str()), _ => return Err("token: строка (адрес токена или его название) или ничего".into()) };
+            let plan = plan(&accounts, &net, to, token, &sources, crate::rand_id(), false, None).await?;
             let v = show(&plan, crate::vault::is_open(&crate::vault_path(app)?));
             {
+                let s = st.session.lock().unwrap();
+                if !s.unlocked || s.locks != locks { return Err("кошелёк заблокировали, пока запрос собирался".into()) }
                 let mut h = st.agent.lock().unwrap();
                 if h.live().is_some() { return Err(busy()) }
                 h.waiting = Some(plan);
@@ -380,6 +386,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
             let n = p["limit"].as_u64().unwrap_or(10).clamp(1, 10) as usize; // each detail is one node call
             let net = p["network"].as_str().unwrap_or("mainnet");
             if let Ok(c) = Cluster::parse(net) {
+                if matches!(c, Cluster::Local) && !cfg!(debug_assertions) { return Err("локальная тестовая сеть только в сборке для разработки".into()) }
                 let mut out = Vec::new();
                 for s in solana::history(&a.solana, c).await?.into_iter().take(n) {
                     out.push(match solana::tx(&s.sig, &a.solana, c).await { Ok(t) => json!(t), Err(_) => json!(s) }); // details when the node gives them
@@ -406,7 +413,7 @@ mod tests {
         for _ in 0..PER_MIN { h.admit(t).unwrap() }
         assert!(h.admit(t).is_err(), "sixth request in a minute refused");
         assert!(h.admit(t + Duration::from_secs(61)).is_ok(), "window slides");
-        h.waiting = Some(Plan { id: "a".into(), to: String::new(), new_recipient: false, body: Body::Sol(vec![]), view: json!({}), at: t - TTL - Duration::from_secs(1), owner: false, addon: None });
+        h.waiting = Some(Plan { id: "a".into(), to: String::new(), ask_tail: false, body: Body::Sol(vec![]), view: json!({}), at: t - TTL - Duration::from_secs(1), owner: false, addon: None });
         assert!(h.live().is_none(), "an old plan expires");
         assert!(matches!(h.closed.get("a"), Some(Err(_))));
         // outcomes come from the core's trackers; a refusal clears the signature

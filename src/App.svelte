@@ -393,7 +393,8 @@
           return { account: own.id, amount: s.amount.trim() }
         })
         if (sheet || transferOffer || view === 'locked') throw new Error('busy')
-        const token = typeof p.token === 'string' && isAddress(p.token) ? p.token : undefined // a Solana mint; none = SOL
+        if (p.token !== undefined && !(typeof p.token === 'string' && isAddress(p.token))) throw new Error('token: a Solana mint, or leave it out for SOL') // never falls back to SOL
+        const token = p.token as string | undefined
         const b = await batchPlan(cluster(solChain())!, to, sources, token, a.id)
         showBatch(b, true)
         return new Promise(r => (transferOffer = r))
@@ -425,13 +426,15 @@
   }
   // the frame is told when the owner's accounts change (a key offer landed, a wallet was added)
   $effect(() => { const l = vaultAccounts.map(x => x.solana).join(); if (view === 'addon' && l && addonNow?.permissions.includes('accounts')) frameEl?.contentWindow?.postMessage({ talon: 1, event: 'accounts' }, '*') })
-  function sheetClosed(done: boolean) {
+  function sheetClosed(done: boolean, note?: string) {
     const m = sheet?.mode, wasSwap = !!sheet?.draft?.swap, wasFee = !!feeInfo && sheet?.draft?.to === feeInfo.owner
     if (m === 'addon-keys') { keyOffer?.({ added: done }); keyOffer = null; if (done) flash(t('addon.added'), undefined, true) }
     // an add-on's proposal is answered once: closing the window without confirming rejects it in the core too, so the
     // add-on is never told «no» while the plan could still be confirmed later
-    if (m === 'batch' && transferOffer) { if (!done && agentReq) invoke('batch_reject', { id: agentReq.id }).catch(() => {}); transferOffer({ confirmed: done }); transferOffer = null; agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
-    else if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
+    // the sheet's own plan id: a stale proposal sheet never rejects a newer plan that replaced it
+    if (m === 'batch' && transferOffer) { if (!done && sheet?.batch) invoke('batch_reject', { id: sheet.batch.id }).catch(() => {}); transferOffer({ confirmed: done }); transferOffer = null; agentReq = null }
+    else if (m === 'batch' && !done && !note) invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {})
+    if (m === 'batch' && (done || note)) { agentReq = null; if (note) flash(note); else flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) }
     sheet = null
     hero?.rest(away) // a phone tab without the card keeps the scene asleep
     if (enterAfterSheet) { enterAfterSheet = false; enter() }

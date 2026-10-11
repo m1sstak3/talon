@@ -338,12 +338,16 @@ async fn price(http: &reqwest::Client, url: &str, d: &mut Draft, is_contract: bo
 /// balance still covers the most it can cost, the exact call still passes a dry run. Gas, fees and amount stay frozen
 pub async fn recheck(d: &Draft) -> Result<(), String> {
     let http = http()?;
-    let nonce = hex_u128(&rpc(&http, &d.rpc, "eth_getTransactionCount", json!([d.from, "pending"])).await?)? as u64;
-    if nonce != d.nonce { return Err("счёт успел отправить другой перевод — соберите пакет заново".into()) }
+    if pending_nonce(&d.rpc, &d.from).await? != d.nonce { return Err("счёт успел отправить другой перевод — соберите пакет заново".into()) }
     let bal = hex_u128(&rpc(&http, &d.rpc, "eth_getBalance", json!([d.from, "pending"])).await?)?;
     if bal < d.fee_max.saturating_add(d.value) { return Err("на счёте уже не хватает на сумму и комиссию".into()) }
     let call = json!({ "from": d.from, "to": hex0x(&d.call_to), "value": qty(d.value), "data": hex0x(&d.data), "gas": qty(d.gas as u128) });
     rpc(&http, &d.rpc, "eth_call", json!([call, "latest"])).await.map(|_| ()).map_err(|e| format!("сеть отклонила бы этот перевод: {e}"))
+}
+/// the address's next nonce including pending transactions
+pub async fn pending_nonce(url: &str, address: &str) -> Result<u64, String> {
+    let http = http()?;
+    Ok(hex_u128(&rpc(&http, url, "eth_getTransactionCount", json!([address, "pending"])).await?)? as u64)
 }
 /// a recipient with code is a contract (requests from agents and add-ons never go there)
 pub async fn is_contract(url: &str, address: &str) -> Result<bool, String> {
