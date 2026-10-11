@@ -270,7 +270,7 @@ pub async fn prepare(a: Ask<'_>) -> Result<Draft, String> {
     if to == [0u8; 20] { return Err("нулевой адрес: всё отправленное туда сгорает".into()) }
     let token = match a.token {
         None => None,
-        Some(t) => Some(known.and_then(|n| n.tokens.iter().find(|x| x.1.eq_ignore_ascii_case(t))).ok_or("этот токен кошелёк пока не отправляет")?),
+        Some(t) => Some(known.and_then(|n| n.tokens.iter().find(|x| x.1.eq_ignore_ascii_case(t) || x.0.eq_ignore_ascii_case(t))).ok_or("этот токен кошелёк пока не отправляет")?), // contract address or listed symbol
     };
     if let Some((_, c, _)) = token { if addr_bytes(c)? == to { return Err("это адрес самого токена: монеты туда пропадут. Нужен адрес получателя".into()) } }
     let native = known.map(|n| n.native.to_string()).or_else(|| a.symbol.map(|s| s.trim().chars().take(10).collect())).filter(|s| !s.is_empty()).ok_or("у сети нет названия монеты")?;
@@ -334,11 +334,24 @@ async fn price(http: &reqwest::Client, url: &str, d: &mut Draft, is_contract: bo
     Ok(())
 }
 
-/// the address's next nonce including pending transactions (a batch row whose planned nonce moved is not signed)
-pub async fn pending_nonce(url: &str, address: &str) -> Result<u64, String> {
+/// a planned batch row just before signing (it may have waited for the owner): its nonce is still the next one, the
+/// balance still covers the most it can cost, the exact call still passes a dry run. Gas, fees and amount stay frozen
+pub async fn recheck(d: &Draft) -> Result<(), String> {
     let http = http()?;
-    Ok(hex_u128(&rpc(&http, url, "eth_getTransactionCount", json!([address, "pending"])).await?)? as u64)
+    let nonce = hex_u128(&rpc(&http, &d.rpc, "eth_getTransactionCount", json!([d.from, "pending"])).await?)? as u64;
+    if nonce != d.nonce { return Err("счёт успел отправить другой перевод — соберите пакет заново".into()) }
+    let bal = hex_u128(&rpc(&http, &d.rpc, "eth_getBalance", json!([d.from, "pending"])).await?)?;
+    if bal < d.fee_max.saturating_add(d.value) { return Err("на счёте уже не хватает на сумму и комиссию".into()) }
+    let call = json!({ "from": d.from, "to": hex0x(&d.call_to), "value": qty(d.value), "data": hex0x(&d.data), "gas": qty(d.gas as u128) });
+    rpc(&http, &d.rpc, "eth_call", json!([call, "latest"])).await.map(|_| ()).map_err(|e| format!("сеть отклонила бы этот перевод: {e}"))
 }
+/// a recipient with code is a contract (requests from agents and add-ons never go there)
+pub async fn is_contract(url: &str, address: &str) -> Result<bool, String> {
+    let http = http()?;
+    Ok(rpc(&http, url, "eth_getCode", json!([address, "latest"])).await?.as_str().is_some_and(|c| c.len() > 2))
+}
+/// a test network from the core's table (development builds move only test money)
+pub fn is_test(chain_id: u64) -> bool { net(chain_id).is_some_and(|n| n.test) }
 /// the most of the native coin that can leave right now, priced for the real recipient when it is known
 pub async fn max_native(rpc_url: &str, chain_id: u64, from: &str, to: Option<&str>) -> Result<String, String> {
     let to = to.map(str::trim).filter(|t| valid_address(t)).unwrap_or("0x000000000000000000000000000000000000dEaD"); // no recipient yet: an ordinary address

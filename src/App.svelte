@@ -393,7 +393,8 @@
           return { account: own.id, amount: s.amount.trim() }
         })
         if (sheet || transferOffer || view === 'locked') throw new Error('busy')
-        const b = await batchPlan(cluster(solChain())!, to, sources, a.id)
+        const token = typeof p.token === 'string' && isAddress(p.token) ? p.token : undefined // a Solana mint; none = SOL
+        const b = await batchPlan(cluster(solChain())!, to, sources, token, a.id)
         showBatch(b, true)
         return new Promise(r => (transferOffer = r))
       }
@@ -430,7 +431,6 @@
     // an add-on's proposal is answered once: closing the window without confirming rejects it in the core too, so the
     // add-on is never told «no» while the plan could still be confirmed later
     if (m === 'batch' && transferOffer) { if (!done && agentReq) invoke('batch_reject', { id: agentReq.id }).catch(() => {}); transferOffer({ confirmed: done }); transferOffer = null; agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
-    else if (m === 'batch' && sheet?.batch?.kind) { agentReq = null; if (done) { flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } }
     else if (m === 'batch') { if (done) { agentReq = null; flash(t('agent.sent'), undefined, true); setTimeout(refresh, 2500) } else invoke<{ waiting: Batch | null }>('agent_state').then(s => (agentReq = s.waiting ? { ...s.waiting, known: agentReq?.known } : null), () => {}) }
     sheet = null
     hero?.rest(away) // a phone tab without the card keeps the scene asleep
@@ -603,7 +603,7 @@
     const v = members.flatMap(a => holdings[hk(a, chain)]?.cards ?? []).map(c => prices[pidOf(c, chain)] === undefined ? undefined : prices[pidOf(c, chain)] * c.amount).filter((x): x is number => x !== undefined)
     return v.length ? v.reduce((a, b) => a + b, 0) : undefined
   })
-  // «Перевести со всех»: Solana for now (the core's batch), one destination; «всё» skips accounts that are empty
+  // «Перевести со всех»: one destination, SOL / a Solana token / an EVM coin or listed token (the core's batch); «всё» skips empty accounts
   let batchOpen = $state(false), bTo = $state(''), bMode = $state<'all' | 'each'>('all'), bAmt = $state(''), bTouched = $state(false), bBusy = $state(false), bTok = $state('')
   const bSigners = $derived(signers.filter(a => !!addressFor(a, chain)))
   const canBatch = $derived((chain.kind === 'solana' || chain.kind === 'evm') && bSigners.length > 0)
@@ -623,9 +623,8 @@
     if (!sources.length) { flash(t('fold.nothing')); return }
     bBusy = true
     try {
-      if (chain.kind === 'evm') showBatch(await invoke<Batch>('evm_batch_plan', { chainId: chain.chainId, rpc: chain.rpc, to: bAddr, token: bTok || null, sources }), true)
-      else if (cluster(chain) && bTok) showBatch(await invoke<Batch>('sol_batch_plan', { cluster: cluster(chain), to: bAddr, mint: bTok, sources }), true)
-      else if (cluster(chain)) showBatch(await batchPlan(cluster(chain)!, bAddr, sources), true)
+      const net = chain.kind === 'evm' ? String(chain.chainId) : cluster(chain)
+      if (net) showBatch(await batchPlan(net, bAddr, sources, bTok), true)
     } catch (err) { flash(String(err)) } finally { bBusy = false }
   }
   function removeWatch(id: string) {

@@ -29,17 +29,16 @@ export function install(kind: string) {
       case 'ton_watch': await wait(300); return { nano: '12500000000', usdt: '42000000', active: true }
       case 'addon_list': { const id = new URLSearchParams(location.search).get('addon'); return id ? [{ id, name: 'Сбор', version: '1.0.0', description: '', permissions: ['accounts', 'balances', 'history', 'transfer'], hosts: [] }] : [] }
       case 'addon_open': return null
-      case 'sol_batch_plan': await wait(700); return { id: 'sb1', by: 'owner', kind: 'sol', network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
-        total: String(a.sources.length * 25), sym: 'USDC', fees: (a.sources.length * 0.000005).toFixed(6), feeSym: 'SOL',
-        rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.solana ?? '', amount: '25', fee: '0.000005' })) }
-      case 'evm_batch_plan': await wait(700); return { id: 'eb1', by: 'owner', kind: 'evm', network: 'Base', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
-        total: (a.sources.length * (a.token ? 25 : 0.4)).toString(), sym: a.token ? 'USDC' : 'ETH', fees: (a.sources.length * 0.0000021).toFixed(7), feeSym: 'ETH',
-        rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.evm ?? '', amount: a.token ? '25' : '0.4', fee: '0.0000021' })) }
       case 'folders_get': return folders
       case 'folders_set': folders = a.list; localStorage.setItem('mockFolders', JSON.stringify(folders)); return null
-      case 'batch_plan': await wait(700); return waiting = { id: 'b2', by: a.addon ? 'addon' : 'owner', byName: a.addon ? 'Сбор' : undefined, network: 'Solana Mainnet', test: false, to: a.to, newRecipient: false, open, count: a.sources.length,
-        total: (a.sources.length * 0.4).toFixed(6), fees: (a.sources.length * 0.000005).toFixed(6),
-        rows: a.sources.map((x: any) => ({ name: accounts.find(y => y.id === x.account)?.name ?? x.account, from: accounts.find(y => y.id === x.account)?.solana ?? '', balance: '0.400005', amount: '0.4', fee: '0.000005', left: '0' })) }
+      case 'batch_plan': { // one plan for every kind: SOL, a Solana token (token = mint), an EVM network (network = chain id)
+        await wait(700)
+        const evm = /^\d+$/.test(a.network), tok = !!a.token, n = a.sources.length, row = (x: any) => accounts.find(y => y.id === x.account) as any
+        const amt = tok ? '25' : evm ? '0.4' : '0.4', fee = evm ? '0.0000021' : '0.000005'
+        return waiting = { id: 'b2', by: a.addon ? 'addon' : 'owner', byName: a.addon ? 'Сбор' : undefined, network: evm ? 'Base' : 'Solana Mainnet', test: false, to: a.to, newRecipient: !!a.addon, open, count: n,
+          total: String(n * Number(amt)), sym: tok ? 'USDC' : evm ? 'ETH' : 'SOL', fees: (n * Number(fee)).toFixed(7), feeSym: evm ? 'ETH' : 'SOL', feeMax: evm || tok,
+          rows: a.sources.map((x: any) => ({ name: row(x)?.name ?? x.account, from: (evm ? row(x)?.evm : row(x)?.solana) ?? '', amount: amt, fee, ...(evm || tok ? {} : { balance: '0.400005', left: '0' }) })) }
+      }
       case 'sol_history': await wait(400); return [1, 2, 3].map(i => ({ sig: `demoSig${i}`.padEnd(88, String(i)), time: 1791400000 - i * 86400, ok: true }))
       case 'sol_tx': await wait(300); return { sig: a.sig, time: 1791400000, ok: true, fee: a.sig.endsWith('2') ? '5000' : null, peer: 'Fk7aUsdcDemoMint1111111111111111111111111111',
         moves: a.sig.endsWith('2') ? [{ mint: null, amount: '100000000', decimals: 9, incoming: false }] : [{ mint: a.sig.endsWith('3') ? 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' : null, amount: a.sig.endsWith('3') ? '5000000' : '250000000', decimals: a.sig.endsWith('3') ? 6 : 9, incoming: true }] }
@@ -49,7 +48,11 @@ export function install(kind: string) {
       case 'agent_access': agentOn = a.on; return agentOn
       case 'agent_paths': return { mcp: String.raw`C:\Program Files\Talon\agent\talon-mcp.mjs`, skill: String.raw`C:\Program Files\Talon\agent\SKILL.md` }
       case 'batch_reject': waiting = null; return null
-      case 'batch_confirm': await wait(900); if (!open && a.pass !== 'demo-pass') throw 'неверный пароль'; waiting = null; return { sent: 3, total: 3 }
+      case 'batch_confirm': { // a requester's plan to a new address: its last 4 characters, as the core asks
+        const w = waiting as any
+        if (w && w.by !== 'owner' && w.newRecipient && (a.tail ?? '').trim() !== w.to.slice(-4)) throw 'введите последние 4 знака адреса получателя — так видно, что адрес тот'
+        await wait(900); if (!open && a.pass !== 'demo-pass') throw 'неверный пароль'; waiting = null; return { sent: 3, total: 3, errors: [] }
+      }
       case 'clip_secret': await navigator.clipboard.writeText(a.text).catch(() => {}); return 30
       case 'secure_add_evm': await wait(500); accounts = accounts.map(x => ({ ...x, evm: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23' })); changed(); return null
       case 'secure_new_phrase': return 'orbit velvet canyon ember ledger quartz harbor maple signal tunnel cobalt frost'

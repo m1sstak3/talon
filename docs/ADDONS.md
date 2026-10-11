@@ -75,7 +75,7 @@ const talon = (() => {
 | `talon('open', { address })` | `accounts` | Shows that account of the owner in the wallet; `false` if it is not theirs. |
 | `talon('folders')` | `accounts` | `[{ name, accounts: [{ name, solana, evm }] }]`: the owner's folders with their own accounts (watch-only addresses left out). |
 | `talon('history', { address, limit })` | `history` | `{ network, rows: [{ sig, time, ok, fee, peer, moves: [{ mint, amount, decimals, incoming }] }] }`: the latest 1–20 operations of a Solana address (default 10), on the wallet's Solana network. Amounts in base units. |
-| `talon('requestTransfer', { to, sources: [{ address, amount }] })` | `transfer` | Proposes SOL transfers from 1–50 of the owner's own accounts (by Solana address) to one address; `amount` is `"0.5"` or `"max"`. The wallet builds a fixed plan and opens its own confirmation window with your add-on's name; the owner confirms with the password or rejects. Resolves `{ confirmed: true }` or `{ confirmed: false }`. Ledger accounts cannot be sources. |
+| `talon('requestTransfer', { to, token?, sources: [{ address, amount }] })` | `transfer` | Proposes transfers of SOL, or of one Solana token (`token` = its mint; on mainnet USDC and USDT only), from 1–50 of the owner's own accounts (by Solana address) to one ordinary wallet address (never a token account or a program); `amount` is `"0.5"` or `"max"`. To an address never used before, the owner also types its last 4 characters. The wallet builds a fixed plan and opens its own confirmation window with your add-on's name; the owner confirms with the password or rejects. Resolves `{ confirmed: true }` or `{ confirmed: false }`. Ledger accounts cannot be sources. |
 | `talon('addKeys', { items: [{ name, key }] })` | `keys` | Offers Solana private keys (base58, 64 bytes, as Phantom exports) as new accounts. The wallet opens its own window with the addresses and asks the owner's password; resolves `{ added: true }` or `{ added: false }` if cancelled. Keys already in the wallet are skipped. |
 
 Events: `talon:accounts` fires when the owner's accounts change (redraw your list).
@@ -98,7 +98,8 @@ An add-on never sends by itself. With the `transfer` permission it may **propose
 wallet checks the sources are the owner's, prices and dry-runs every transfer, and shows the plan in its own window
 under your add-on's name — destination, every account, amounts, fees. Nothing your page says reaches that window. The
 owner confirms with the password, or rejects; what is signed is exactly the plan shown, and one plan waits at a time
-(an agent's request, a folder's «Перевести со всех» and add-on proposals share that slot). Solana SOL only for now.
+(an agent's request and add-on proposals wait their turn; the owner's own «Перевести со всех» replaces whatever waits).
+Solana SOL and tokens for now.
 
 The owner can do the same by hand (a folder's «Перевести со всех») or through an AI assistant (see
 [`agent/SKILL.md`](../agent/SKILL.md)).

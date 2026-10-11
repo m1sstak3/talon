@@ -252,8 +252,9 @@ export const openTx = (sig: string, c: Chain) => invoke('open_tx', { sig, cluste
 export interface Folder { id: string; name: string; accounts: string[] }
 export const foldersGet = () => invoke<Folder[]>('folders_get')
 export const foldersSet = (list: Folder[]) => invoke<void>('folders_set', { list })
-// a batch the owner makes by hand: the same immutable plan and confirmation sheet as an agent's request
-export const batchPlan = (network: string, to: string, sources: { account: string; amount: string }[], addon?: string) => invoke<Batch>('batch_plan', { network, to, sources, addon })
+// a batch the owner makes by hand (or an add-on proposes): the same immutable plan and sheet as an agent's request.
+// network: a Solana cluster or an EVM chain id; token: a Solana mint or an EVM listed token (none = the coin)
+export const batchPlan = (network: string, to: string, sources: { account: string; amount: string }[], token?: string, addon?: string) => invoke<Batch>('batch_plan', { network, to, sources, token: token || null, addon: addon ?? null })
 export const usdPrices = (mints: string[], coins: string[]) => invoke<Record<string, number>>('usd_prices', { mints, coins })
 // swap (Solana mainnet): a live quote, then the core builds, checks and dry-runs the exact transaction
 export interface SwapQuote { in_amount: string; out_amount: string; min_out: string; out_decimals: number; impact: string; route: string; fee_bps: number }

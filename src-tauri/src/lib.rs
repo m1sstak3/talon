@@ -28,9 +28,7 @@ pub(crate) struct Session {
     send: Option<Send>,                 // the one transfer waiting for confirmation
 }
 struct Send { id: String, account: String, draft: Draft }
-enum Draft { Sol(solana::Draft), Evm(evm::Draft), EvmSwap(Vec<evm::Draft>), EvmBatch(Vec<(String, evm::Draft)>), SolBatch(Vec<SolRow>) } // EvmBatch: (account id, draft) per row of a folder's batch
-/// a row of a Solana token batch: what to rebuild at confirm, and the draft the owner saw
-struct SolRow { account: String, amount: String, draft: solana::Draft }
+enum Draft { Sol(solana::Draft), Evm(evm::Draft), EvmSwap(Vec<evm::Draft>) } // batches wait in the agent hub (agent.rs), not here
 pub(crate) struct App { pub(crate) session: Mutex<Session>, pub(crate) agent: Mutex<agent::Hub> }
 
 pub(crate) fn vault_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -67,31 +65,36 @@ fn pending_edit(app: &AppHandle, f: impl FnOnce(&mut Vec<Pending>)) -> Result<()
     if let Some(dir) = journal(app)?.parent() { let _ = std::fs::create_dir_all(dir); }
     vault::durable(&journal(app)?, &serde_json::to_string(&list).map_err(|e| e.to_string())?)
 }
+/// a send's state: to the window, and to a batch row in the hub (an agent's request_status reads it there)
+fn told(app: &AppHandle, sig: &str, state: &'static str) {
+    app.state::<App>().agent.lock().unwrap().seen(sig, state);
+    let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": sig, "state": state }));
+}
 /// follow one send to its outcome; only a final answer removes it from the pending list
 fn follow(app: AppHandle, p: Pending) {
     if p.cluster == "evm" { return follow_evm(app, p) }
     tauri::async_runtime::spawn(async move {
         let Ok(c) = solana::Cluster::parse(&p.cluster) else { return };
         let (a2, s2) = (app.clone(), p.sig.clone()); // early, provisional "confirmed"; the journal waits for finalized
-        let state = match solana::track(&p.sig, c, p.last_valid, move || { let _ = a2.emit_to("main", "send-status", serde_json::json!({ "sig": s2, "state": "confirmed" })); }).await {
+        let state = match solana::track(&p.sig, c, p.last_valid, move || told(&a2, &s2, "confirmed")).await {
             solana::Outcome::Confirmed => "finalized", solana::Outcome::Failed => "failed",
             solana::Outcome::Expired => "expired", solana::Outcome::Unknown => "unknown",
         };
         if state != "unknown" { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig)); }
-        let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": p.sig, "state": state }));
+        told(&app, &p.sig, state);
     });
 }
 
 fn follow_evm(app: AppHandle, p: Pending) {
     tauri::async_runtime::spawn(async move {
         let (a2, s2) = (app.clone(), p.sig.clone());
-        let state = match evm::track(&p.rpc, &p.sig, &p.from, p.nonce, move || { let _ = a2.emit_to("main", "send-status", serde_json::json!({ "sig": s2, "state": "confirmed" })); }).await {
+        let state = match evm::track(&p.rpc, &p.sig, &p.from, p.nonce, move || told(&a2, &s2, "confirmed")).await {
             evm::Outcome::Confirmed => "finalized", evm::Outcome::Failed => "failed", evm::Outcome::Replaced => "replaced",
             evm::Outcome::Included => "confirmed", evm::Outcome::Unknown => "unknown",
         };
         let state = if p.approved && matches!(state, "failed" | "replaced") { "failed-allowance" } else { state };
         if !matches!(state, "unknown" | "confirmed") { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig)); } // not final yet: the journal keeps it for the next start
-        let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": p.sig, "state": state }));
+        told(&app, &p.sig, state);
     });
 }
 
@@ -251,7 +254,7 @@ fn bio_disable(app: AppHandle) {
 
 #[tauri::command]
 fn vault_lock(state: tauri::State<App>) -> Result<(), String> {
-    { let mut h = state.agent.lock().unwrap(); if let Some(p) = h.waiting.take() { h.close(&p.id, p.cluster, Err("кошелёк заблокирован".into())) } }
+    { let mut h = state.agent.lock().unwrap(); if let Some(p) = h.waiting.take() { h.close(&p.id, Err("кошелёк заблокирован".into())) } }
     let mut s = state.session.lock().unwrap();
     s.unlocked = false;
     s.accounts.clear();
@@ -545,171 +548,6 @@ async fn evm_prepare_send(app: AppHandle, state: tauri::State<'_, App>, account:
     Ok(out)
 }
 
-// ---------------------------------------------------------------- EVM batch (a folder's «Перевести со всех»)
-/// one draft per own account: the coin or one listed token, «max» or an amount, all priced and dry-run now; the plan
-/// waits in the single-send slot and one password signs it all. Same dev-build rules as a single EVM send
-#[tauri::command]
-async fn evm_batch_plan(app: AppHandle, state: tauri::State<'_, App>, chain_id: u64, rpc: String, to: String, token: Option<String>, sources: Vec<agent::Source>) -> Result<serde_json::Value, String> {
-    #[cfg(debug_assertions)]
-    if !matches!(chain_id, 11155111 | 84532 | 31337) { return Err("настоящие сети закрыты в сборке для разработки; переводы — только в установленной программе".into()) }
-    #[cfg(not(debug_assertions))]
-    if chain_id == 31337 { return Err("локальная тестовая сеть доступна только в сборке для разработки".into()) }
-    if sources.is_empty() || sources.len() > agent::MAX_SOURCES { return Err(format!("от 1 до {} счетов в одном пакете", agent::MAX_SOURCES)) }
-    let path = vault_path(&app)?;
-    let (accs, epoch) = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } (s.accounts.clone(), s.epoch) };
-    let mut seen = std::collections::HashSet::new();
-    let (mut rows, mut drafts) = (vec![], vec![]);
-    for src in &sources {
-        let a = accs.iter().find(|a| a.id == src.account).ok_or_else(|| format!("счёт {} не из этого кошелька", src.account))?;
-        if !seen.insert(a.id.clone()) { return Err(format!("счёт «{}» указан дважды", a.name)) }
-        if a.ledger { return Err(format!("счёт «{}» подписывает Ledger: в пакет он не входит", a.name)) }
-        let from = a.evm.clone().ok_or_else(|| format!("у счёта «{}» нет адреса Ethereum", a.name))?;
-        // two accounts can carry one key: one row per sender ADDRESS, or two rows would take one nonce
-        if drafts.iter().any(|(_, d): &(String, evm::Draft)| d.from.eq_ignore_ascii_case(&from)) { return Err(format!("адрес счёта «{}» уже есть в пакете", a.name)) }
-        let d = evm::prepare(evm::Ask { rpc: rpc.trim(), chain_id, from: &from, to: to.trim(), amount: &src.amount, token: token.as_deref(), name: None, symbol: None }).await
-            .map_err(|e| format!("«{}»: {e}", a.name))?;
-        if d.token.is_none() && d.fee_max >= d.amount { return Err(format!("«{}»: комиссия не меньше суммы — такой перевод не имеет смысла", a.name)) }
-        rows.push(serde_json::json!({ "name": a.name, "from": d.from, "amount": evm::units(d.amount, d.decimals as u32), "fee": evm::units(d.fee_max, 18) }));
-        drafts.push((a.id.clone(), d));
-    }
-    let d0 = &drafts[0].1;
-    let total: u128 = drafts.iter().map(|(_, d)| d.amount).sum();
-    let fees: u128 = drafts.iter().map(|(_, d)| d.fee_max).sum();
-    let id = rand_id();
-    let out = serde_json::json!({
-        "id": id, "by": "owner", "kind": "evm", "network": d0.network, "test": d0.test, "to": d0.to, "open": vault::is_open(&path),
-        "newRecipient": drafts.iter().any(|(_, d)| d.new_recipient), "count": drafts.len(),
-        "total": evm::units(total, d0.decimals as u32), "sym": d0.symbol, "fees": evm::units(fees, 18), "feeSym": d0.native, "rows": rows,
-        "warn": drafts.iter().filter_map(|(_, d)| d.warn.clone()).collect::<std::collections::BTreeSet<_>>(), // the core's own words, never the requester's
-    });
-    let mut s = state.session.lock().unwrap();
-    if !s.unlocked || s.epoch != epoch { return Err("перевод отменён".into()) }
-    s.send = Some(Send { id, account: String::new(), draft: Draft::EvmBatch(drafts) });
-    Ok(out)
-}
-/// sign every row with one decryption, recover each signer and compare it with the row's sender, journal all, then send
-/// each; a row the network refuses is reported, the rest go
-#[tauri::command]
-async fn evm_batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>) -> Result<serde_json::Value, String> {
-    let gone = || "переводы уже отправлены или отменены".to_string();
-    let _one = EVM_CONFIRM.lock().await;
-    let items: Vec<(String, [u8; 32])> = {
-        let s = state.session.lock().unwrap();
-        if !s.unlocked { return Err("кошелёк заблокирован".into()) }
-        match &s.send { Some(Send { id: i, draft: Draft::EvmBatch(ds), .. }) if *i == id => ds.iter().map(|(a, d)| (a.clone(), d.hash())).collect(), _ => return Err(gone()) }
-    };
-    let refs: Vec<(&str, [u8; 32])> = items.iter().map(|(a, h)| (a.as_str(), *h)).collect();
-    let sigs = vault::sign_evm_many(&vault_path(&app)?, &pass, &refs)?; // wrong password keeps the plan
-    let ds = {
-        let mut s = state.session.lock().unwrap();
-        match s.send.take() {
-            Some(Send { id: i, draft: Draft::EvmBatch(ds), .. }) if i == id && ds.len() == items.len() && ds.iter().zip(&items).all(|((_, d), (_, h))| d.hash() == *h) => ds,
-            other => { s.send = other; return Err(gone()) }
-        }
-    };
-    let mut raws = vec![];
-    for (((_, d), (_, h)), (sig, parity)) in ds.iter().zip(&items).zip(&sigs) {
-        // the account sent something else since the plan: its row would collide; the rest of the batch still goes
-        if evm::pending_nonce(&d.rpc, &d.from).await.ok() != Some(d.nonce) { raws.push(None); continue }
-        let rs = k256::ecdsa::Signature::from_slice(sig).map_err(|_| "подпись повреждена".to_string())?;
-        let rec = k256::ecdsa::RecoveryId::from_byte(*parity).ok_or("подпись повреждена")?;
-        let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(h, &rs, rec).map_err(|_| "подпись повреждена".to_string())?;
-        if vault::evm_address_of(&vk) != d.from { return Err("подпись не сходится с адресом счёта".into()) }
-        raws.push(Some(d.signed(sig, *parity)));
-    }
-    let mut errors: Vec<String> = ds.iter().zip(&raws).filter(|(_, r)| r.is_none()).map(|((_, d), _)| format!("{}: счёт успел отправить другой перевод — соберите пакет заново", d.from)).collect();
-    let (ds, raws): (Vec<_>, Vec<_>) = ds.iter().zip(raws).filter_map(|(d, r)| r.map(|r| (d, r))).unzip();
-    let pend: Vec<Pending> = ds.iter().zip(&raws).map(|((_, d), raw)| Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce, approved: false }).collect();
-    pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("переводы не отправлены: {e}"))?; // all on disk before a byte leaves
-    let mut sent = 0;
-    for (((_, d), raw), p) in ds.iter().zip(&raws).zip(pend) {
-        match evm::submit(&d.rpc, raw).await {
-            evm::Sent::Rejected(e) => { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig)); errors.push(format!("{}: {e}", d.from)) }
-            st => { sent += 1; let _ = app.emit_to("main", "send-status", serde_json::json!({ "sig": p.sig, "state": if matches!(st, evm::Sent::Ok) { "sent" } else { "sent-unknown" } })); follow(app.clone(), p) }
-        }
-    }
-    Ok(serde_json::json!({ "sent": sent, "total": items.len(), "errors": errors }))
-}
-
-// ---------------------------------------------------------------- Solana token batch (a folder's «Перевести со всех» for a token)
-#[tauri::command]
-async fn sol_batch_plan(app: AppHandle, state: tauri::State<'_, App>, cluster: String, to: String, mint: String, sources: Vec<agent::Source>) -> Result<serde_json::Value, String> {
-    let c = solana::Cluster::parse(&cluster)?;
-    #[cfg(debug_assertions)]
-    if matches!(c, solana::Cluster::Mainnet) { return Err("основная сеть закрыта в сборке для разработки; переводы — только в установленной программе".into()) }
-    #[cfg(not(debug_assertions))]
-    if matches!(c, solana::Cluster::Local) { return Err("локальная тестовая сеть только в сборке для разработки".into()) }
-    if sources.is_empty() || sources.len() > agent::MAX_SOURCES { return Err(format!("от 1 до {} счетов в одном пакете", agent::MAX_SOURCES)) }
-    let path = vault_path(&app)?;
-    let (accs, epoch) = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } (s.accounts.clone(), s.epoch) };
-    let mut seen = std::collections::HashSet::new();
-    let mut rows: Vec<SolRow> = vec![];
-    for src in &sources {
-        let a = accs.iter().find(|a| a.id == src.account).ok_or_else(|| format!("счёт {} не из этого кошелька", src.account))?;
-        if !seen.insert(a.id.clone()) { return Err(format!("счёт «{}» указан дважды", a.name)) }
-        if a.ledger { return Err(format!("счёт «{}» подписывает Ledger: в пакет он не входит", a.name)) }
-        // «max» = the whole token balance as it is now, written out exactly (the rebuild at confirm sends this, not «max»)
-        let amount = if src.amount.trim().eq_ignore_ascii_case("max") {
-            let (raw, dec) = solana::holding(&solana::watch(&a.solana, c).await?, mint.trim()).filter(|(r, _)| *r > 0).ok_or_else(|| format!("на счёте «{}» нет этого токена", a.name))?;
-            solana::units(raw, dec as u32)
-        } else { src.amount.trim().replace(',', ".") };
-        let d = solana::prepare_token(&a.solana, to.trim(), mint.trim(), &amount, c).await.map_err(|e| format!("«{}»: {e}", a.name))?;
-        rows.push(SolRow { account: a.id.clone(), amount, draft: d });
-    }
-    let d0 = &rows[0].draft;
-    let total: u64 = rows.iter().map(|r| r.draft.amount).sum();
-    let fees: u64 = rows.iter().map(|r| r.draft.fee + r.draft.rent).sum();
-    let network = match c { solana::Cluster::Mainnet => "Solana Mainnet", solana::Cluster::Devnet => "Solana Devnet", solana::Cluster::Local => "Solana Local" };
-    let id = rand_id();
-    let out = serde_json::json!({
-        "id": id, "by": "owner", "kind": "sol", "network": network, "test": !matches!(c, solana::Cluster::Mainnet), "to": d0.to, "open": vault::is_open(&path),
-        "newRecipient": rows.iter().any(|r| r.draft.new_recipient), "count": rows.len(),
-        "total": solana::units(total, d0.decimals as u32), "sym": d0.symbol.map(str::to_string).unwrap_or_else(|| mint.trim().to_string()), // a name only from the core's list; else the whole mint
-        "warn": rows.iter().filter_map(|r| r.draft.warn).collect::<std::collections::BTreeSet<_>>(),
-        "fees": solana::units(fees, 9), "feeSym": "SOL",
-        "rows": rows.iter().map(|r| serde_json::json!({ "name": accs.iter().find(|a| a.id == r.account).map(|a| a.name.clone()).unwrap_or_default(), "from": r.draft.from,
-            "amount": solana::units(r.draft.amount, r.draft.decimals as u32), "fee": solana::units(r.draft.fee + r.draft.rent, 9) })).collect::<Vec<_>>(),
-    });
-    let mut s = state.session.lock().unwrap();
-    if !s.unlocked || s.epoch != epoch { return Err("перевод отменён".into()) }
-    s.send = Some(Send { id, account: String::new(), draft: Draft::SolBatch(rows) });
-    Ok(out)
-}
-/// each row rebuilt now (fresh blockhash) at the planned amount; a row whose amount or fee moved is left out with the
-/// reason; one decryption signs the rest, each signature checked against its sender; journaled, then sent
-#[tauri::command]
-async fn sol_batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>) -> Result<serde_json::Value, String> {
-    let gone = || "переводы уже отправлены или отменены".to_string();
-    let plan: Vec<(String, solana::Draft)> = {
-        let s = state.session.lock().unwrap();
-        if !s.unlocked { return Err("кошелёк заблокирован".into()) }
-        match &s.send { Some(Send { id: i, draft: Draft::SolBatch(rows), .. }) if *i == id => rows.iter().map(|r| (r.account.clone(), r.draft.clone())).collect(), _ => return Err(gone()) }
-    };
-    // each row is the planned message itself with a fresh blockhash; a row whose fee, balance or dry run moved is left out
-    let (mut built, mut errors) = (vec![], vec![]);
-    for (acc, d) in &plan {
-        match solana::refresh(d).await { Ok(fresh) => built.push((acc.clone(), fresh)), Err(e) => errors.push(format!("{}: {e}", d.from)) }
-    }
-    let items: Vec<(&str, &[u8])> = built.iter().map(|(a, d)| (a.as_str(), d.message.as_slice())).collect();
-    let sigs = vault::sign_many(&vault_path(&app)?, &pass, &items)?; // wrong password keeps the plan
-    { let mut s = state.session.lock().unwrap(); match &s.send { Some(Send { id: i, draft: Draft::SolBatch(_), .. }) if *i == id => s.send = None, _ => return Err(gone()) } }
-    for ((_, d), sig) in built.iter().zip(&sigs) {
-        let pk: [u8; 32] = bs58::decode(&d.from).into_vec().ok().and_then(|v| v.try_into().ok()).ok_or("bad sender")?;
-        ed25519_dalek::VerifyingKey::from_bytes(&pk).and_then(|k| k.verify_strict(&d.message, &ed25519_dalek::Signature::from_bytes(sig)))
-            .map_err(|_| "подпись не сходится с адресом счёта".to_string())?;
-    }
-    let pend: Vec<Pending> = built.iter().zip(&sigs).map(|((_, d), sig)| Pending { sig: solana::tx_id(sig), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0, approved: false }).collect();
-    pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("переводы не отправлены: {e}"))?;
-    let mut sent = 0;
-    for (((_, d), sig), p) in built.iter().zip(&sigs).zip(pend) {
-        match solana::submit(d, sig).await {
-            solana::Sent::Rejected(e) => { let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig)); errors.push(format!("{}: сеть не приняла: {e}", d.from)) }
-            _ => { sent += 1; follow(app.clone(), p) }
-        }
-    }
-    Ok(serde_json::json!({ "sent": sent, "total": plan.len(), "errors": errors }))
-}
-
 // ---------------------------------------------------------------- send
 /// build and price a transfer in the core and keep it; the answer is the confirmation screen's data and the draft id.
 /// The UI names account, recipient and amount; it never sees or touches the message that gets signed.
@@ -864,7 +702,6 @@ async fn send_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, 
             Draft::Sol(d) => (p.account.clone(), d.message.clone(), None),
             Draft::Evm(d) => (p.account.clone(), vec![], Some(vec![d.hash()])),
             Draft::EvmSwap(ds) => (p.account.clone(), vec![], Some(ds.iter().map(|d| d.hash()).collect())),
-            Draft::EvmBatch(_) | Draft::SolBatch(_) => return Err("пакет переводов подтверждается своим окном".into()), // evm_/sol_batch_confirm
         }
     };
     if let Some(hashes) = evm_hash { return evm_confirm(app, state, id, pass, account, hashes).await }
@@ -961,7 +798,7 @@ fn agent_switch(app: &AppHandle, on: bool) -> Result<(), String> {
         { h.server = Some(agent::start(app.clone(), file)); }
     } else {
         let _ = std::fs::remove_file(&flag);
-        if h.waiting.as_ref().is_some_and(|p| !p.owner && p.addon.is_none()) { let p = h.waiting.take().unwrap(); h.close(&p.id, p.cluster, Err("доступ агента выключен".into())) } // the owner's and add-ons' batches stay
+        if h.waiting.as_ref().is_some_and(|p| !p.owner && p.addon.is_none()) { let p = h.waiting.take().unwrap(); h.close(&p.id, Err("доступ агента выключен".into())) } // the owner's and add-ons' batches stay
     }
     Ok(())
 }
@@ -970,7 +807,7 @@ fn agent_state(app: AppHandle, state: tauri::State<App>) -> Result<serde_json::V
     let open = vault::is_open(&vault_path(&app)?);
     let mut h = state.agent.lock().unwrap();
     let on = h.on;
-    Ok(serde_json::json!({ "on": on, "waiting": h.live().map(|p| agent::view(p, open)) }))
+    Ok(serde_json::json!({ "on": on, "waiting": h.live().map(|p| agent::show(p, open)) }))
 }
 #[tauri::command]
 fn agent_access(app: AppHandle, on: bool) -> Result<bool, String> { agent_switch(&app, on)?; Ok(on) }
@@ -995,59 +832,73 @@ fn folders_set(app: AppHandle, list: Vec<folders::Folder>) -> Result<(), String>
 }
 /// a batch the owner makes by hand (a folder's «Перевести со всех») or an add-on proposes (its «transfer» permission,
 /// re-checked here): the same immutable plan, sheet and one password as an agent's request; no agent switch needed.
-/// One batch waits at a time, whoever made it
+/// SOL, a Solana token (`token` = mint) or an EVM network's coin or listed token (`network` = chain id). One batch waits at
+/// a time: the owner's own replaces whatever waits (a requester never locks the owner out); a requester waits its turn
 #[tauri::command]
-async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: String, to: String, sources: Vec<agent::Source>, addon: Option<String>) -> Result<serde_json::Value, String> {
+async fn batch_plan(app: AppHandle, state: tauri::State<'_, App>, network: String, to: String, sources: Vec<agent::Source>, token: Option<String>, addon: Option<String>) -> Result<serde_json::Value, String> {
     let by = match addon {
         Some(id) => { addons::granted(&app, &id, "transfer")?; Some(addons::list(&app)?.into_iter().find(|a| a.m.id == id).map(|a| a.m.name).unwrap_or(id)) }
         None => None,
     };
     let accounts = { let s = state.session.lock().unwrap(); if !s.unlocked { return Err("кошелёк заблокирован".into()) } s.accounts.clone() };
-    let c = solana::Cluster::parse(&network)?;
-    #[cfg(not(debug_assertions))]
-    if matches!(c, solana::Cluster::Local) { return Err("локальная тестовая сеть только в сборке для разработки".into()) }
-    #[cfg(debug_assertions)]
-    if matches!(c, solana::Cluster::Local) && std::env::var("CW_VAULT").is_err() { return Err("локальная сеть: только с одноразовым хранилищем".into()) }
+    let net = agent::Net::parse(&network)?;
     let busy = || "ждёт подтверждения другой пакет переводов: сначала решите его".to_string();
-    if state.agent.lock().unwrap().live().is_some() { return Err(busy()) }
-    let plan = agent::plan(&accounts, c, to.trim(), &sources, rand_id(), by.is_none(), by).await?;
-    let v = agent::view(&plan, vault::is_open(&vault_path(&app)?));
+    if by.is_some() && state.agent.lock().unwrap().live().is_some() { return Err(busy()) }
+    let plan = agent::plan(&accounts, &net, &to, token.as_deref(), &sources, rand_id(), by.is_none(), by).await?;
+    let v = agent::show(&plan, vault::is_open(&vault_path(&app)?));
     let mut h = state.agent.lock().unwrap();
-    if h.live().is_some() { return Err(busy()) }
+    if h.live().is_some() {
+        if !plan.owner { return Err(busy()) }
+        let old = h.waiting.take().unwrap();
+        h.close(&old.id, Err(if old.owner { "заменён новым пакетом владельца" } else { "владелец начал свой пакет переводов" }.into()));
+    }
     h.waiting = Some(plan);
     Ok(v)
 }
 #[tauri::command]
 fn batch_reject(state: tauri::State<App>, id: String) {
     let mut h = state.agent.lock().unwrap();
-    if h.waiting.as_ref().is_some_and(|p| p.id == id) { let p = h.waiting.take().unwrap(); h.close(&id, p.cluster, Err("владелец отклонил запрос".into())) }
+    if h.waiting.as_ref().is_some_and(|p| p.id == id) { h.waiting = None; h.close(&id, Err("владелец отклонил запрос".into())) }
 }
-/// the owner confirmed a plan: rebuild each transfer at the plan's price, sign all with one decryption, journal all, send.
-/// A row whose numbers moved since the plan (balance, fee) is not sent: the rest goes, the remainder needs a new request.
+/// the owner confirmed a plan: each row refreshed or left out (agent::sign), all signed with one decryption, journaled,
+/// then sent. A requester's plan to an address new on its network also needs that address's last 4 characters (`tail`)
 #[tauri::command]
-async fn batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>) -> Result<serde_json::Value, String> {
+async fn batch_confirm(app: AppHandle, state: tauri::State<'_, App>, id: String, pass: Zeroizing<String>, tail: Option<String>) -> Result<serde_json::Value, String> {
     let gone = || "запрос уже выполнен, отклонён или устарел".to_string();
     if !state.session.lock().unwrap().unlocked { return Err("кошелёк заблокирован".into()) }
     let plan = { let mut h = state.agent.lock().unwrap(); h.live().filter(|p| p.id == id).cloned().ok_or_else(gone)? };
-    let (signed, mut done) = agent::sign_plan(&plan, &vault_path(&app)?, &pass).await?; // wrong password: the plan stays
+    if !plan.owner && plan.new_recipient && !agent::tail_ok(&plan.to, tail.as_deref()) { return Err("введите последние 4 знака адреса получателя — так видно, что адрес тот".into()) }
+    let _one = match plan.body { agent::Body::Evm(_) => Some(EVM_CONFIRM.lock().await), agent::Body::Sol(_) => None }; // nonces: one EVM confirm at a time
+    let (signed, mut done) = agent::sign(&plan.body, &vault_path(&app)?, &pass).await?; // wrong password: the plan stays
     // one-shot: only the caller that takes the plan out of the hub may send
     { let mut h = state.agent.lock().unwrap(); if !h.waiting.as_ref().is_some_and(|p| p.id == id) { return Err(gone()) } h.waiting = None; }
-    let pend: Vec<Pending> = signed.iter().map(|(_, d, sig)| Pending { sig: solana::tx_id(sig), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0, approved: false }).collect();
+    let pend: Vec<Pending> = signed.iter().map(|(_, tx)| match tx {
+        agent::Tx::Sol(d, sig) => Pending { sig: solana::tx_id(sig), cluster: d.cluster.name().into(), last_valid: d.last_valid, chain: 0, rpc: String::new(), from: String::new(), nonce: 0, approved: false },
+        agent::Tx::Evm(d, raw) => Pending { sig: evm::tx_hash(raw), cluster: "evm".into(), last_valid: 0, chain: d.chain_id, rpc: d.rpc.clone(), from: d.from.clone(), nonce: d.nonce, approved: false },
+    }).collect();
     // all on disk before a single byte goes out
-    pending_edit(&app, |l| l.extend(pend.iter().cloned())).map_err(|e| format!("переводы не отправлены: {e}"))?;
-    let mut sent = 0;
-    for ((r, d, sig), p) in signed.iter().zip(pend) {
-        match solana::submit(d, sig).await {
-            solana::Sent::Rejected(e) => {
+    if let Err(e) = pending_edit(&app, |l| l.extend(pend.iter().cloned())) { state.agent.lock().unwrap().close(&id, Err("журнал переводов не записан".into())); return Err(format!("переводы не отправлены: {e}")) }
+    done.extend(signed.iter().zip(&pend).map(|((a, _), p)| agent::Done { account: a.clone(), sig: Some(p.sig.clone()), error: None, state: "pending" }));
+    let (mut sent, mut errors): (usize, Vec<String>) = (0, done.iter().filter_map(|d| d.error.clone()).collect());
+    state.agent.lock().unwrap().close(&id, Ok(done)); // before the sends: a tracker's first answer must find its row
+    for ((_, tx), p) in signed.iter().zip(pend) {
+        let refused = match tx {
+            agent::Tx::Sol(d, sig) => match solana::submit(d, sig).await { solana::Sent::Rejected(e) => Some(e), _ => None },
+            agent::Tx::Evm(d, raw) => match evm::submit(&d.rpc, raw).await {
+                evm::Sent::Rejected(e) => Some(e),
+                st => { told(&app, &p.sig, if matches!(st, evm::Sent::Ok) { "sent" } else { "sent-unknown" }); None }
+            },
+        };
+        match refused {
+            Some(e) => {
                 let _ = pending_edit(&app, |l| l.retain(|x| x.sig != p.sig));
-                done.push(agent::Done { account: r.account.clone(), sig: None, error: Some(format!("сеть не приняла: {e}")) });
+                state.agent.lock().unwrap().refused(&p.sig, format!("сеть не приняла: {e}"));
+                errors.push(format!("сеть не приняла: {e}"));
             }
-            _ => { sent += 1; done.push(agent::Done { account: r.account.clone(), sig: Some(p.sig.clone()), error: None }); follow(app.clone(), p) }
+            None => { sent += 1; follow(app.clone(), p) }
         }
     }
-    let total = plan.rows.len();
-    state.agent.lock().unwrap().close(&id, plan.cluster, Ok(done));
-    Ok(serde_json::json!({ "sent": sent, "total": total }))
+    Ok(serde_json::json!({ "sent": sent, "total": plan.view["count"], "errors": errors }))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1084,7 +935,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_state, vault_lock, vault_unlock, vault_password, panel_secret, bio_state, bio_enable, bio_unlock, bio_disable,
             secure_new_phrase, secure_save_wallet, secure_add_account, secure_add_evm, secure_export, clip_secret, ledger_accounts, secure_add_ledger,
-            agent_state, agent_access, agent_paths, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan, evm_batch_plan, evm_batch_confirm, sol_batch_plan, sol_batch_confirm,
+            agent_state, agent_access, agent_paths, batch_reject, batch_confirm, fee_state, folders_get, folders_set, batch_plan,
             addon_list, addon_inspect, addon_install, addon_remove, addon_open, addon_keys_preview, secure_addon_keys,
             sol_watch, ton_watch, sol_history, sol_tx, open_tx, open_address, usd_prices, sol_swap_quote, sol_prepare_swap, sol_tokens, token_icon, evm_watch, evm_history, evm_max, evm_swap_tokens, evm_swap_quote, evm_prepare_swap, evm_prepare_send, sol_grants, evm_allowances, prepare_revoke, sol_prepare_send, send_confirm, send_cancel, pending_list, rpc_own, rpc_set,
         ])

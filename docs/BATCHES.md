@@ -1,17 +1,33 @@
-# One place for every batch — design (11.10, reviewed; next step)
+# One place for every batch — design (11.10, reviewed) and what is built
 
-## Today (0.5.0)
+## Built (0.6.0)
 
-Three ways to move money from many own accounts to one address, two storage places:
+Every batch — the owner's folder, an agent (MCP), an add-on — is one `agent::Plan` in the hub: one waits at a time,
+10 min TTL, one-shot, confirmed by `batch_confirm` with one password.
 
-| Kind | Made by | Waits in | Confirmed by | Agent can poll |
-|---|---|---|---|---|
-| SOL | agent, add-on, owner (folder) | `agent::Hub.waiting` (immutable `Plan`, 10 min TTL) | `batch_confirm`: rebuild each row at the plan's price, one decryption, verify, journal, send | yes (`request_status`) |
-| Solana token | owner (folder) only | session single-send slot (`Draft::SolBatch`) | `sol_batch_confirm`: rebuild at planned amount, skip a moved row, one decryption | no |
-| EVM coin / listed token | owner (folder) only | session single-send slot (`Draft::EvmBatch`) | `evm_batch_confirm`: sign drafted hashes, one decryption, recover signer | no |
+| Kind | `network` | `token` | Confirm refreshes |
+|---|---|---|---|
+| SOL | `mainnet` / `devnet` / `local` | — | the blockhash (`solana::refresh`); fixed price for all rows |
+| Solana token | same | mint | the blockhash |
+| EVM coin / listed token | chain id or name (core table) | — / symbol or contract | nothing: nonce, balance and dry run re-checked (`evm::recheck`), gas and fees frozen |
 
-Gaps: agents and add-ons cannot request tokens or EVM; the owner's token/EVM batch is lost if the sheet closes (the
-single-send slot is shared with ordinary sends); EVM drafts are signed as drafted (stale gas after a long read).
+- Plan (`agent::plan`): own accounts, one row per account and per sender address, no Ledger, no self-transfer; native
+  rows with fee ≥ amount refused. Requesters (agent, add-on): an ordinary wallet as recipient (Solana: empty or
+  system-owned; EVM: no code); on Solana mainnet only the core's named mints (USDC, USDT).
+- Network gate (`agent::Net::parse`): the core's table only (custom EVM networks are not batched); dev builds test money
+  only, local chains with a throwaway vault only; release builds never local.
+- Who waits: the owner's own plan replaces whatever waits; a requester waits its turn.
+- A requester's plan to an address new on its network: the owner types its last 4 characters (`tail`, core-checked).
+- Status for agents: per row from the core's own trackers (`told` → `Hub::seen`), no node calls: pending, confirmed,
+  finalized, failed, expired (never landed), not-sent, unknown.
+- Add-ons: SOL and Solana tokens under «transfer» (EVM later).
+- Removed: `Draft::SolBatch`, `Draft::EvmBatch`, `sol_batch_*`, `evm_batch_*`.
+- Not capped: a token row's fee against its amount (fee in the coin); the sheet shows the ceiling.
+
+## Before (0.5.x)
+
+SOL batches lived in the hub; the owner's token and EVM batches lived in the single-send slot (lost when the sheet
+closed), and agents / add-ons could request SOL only.
 
 ## Proposal
 

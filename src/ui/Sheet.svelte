@@ -13,7 +13,7 @@
   export interface Batch {
     id: string; network: string; test: boolean; to: string; newRecipient: boolean; open: boolean; count: number; total: string; fees: string
     rows: { name: string; from: string; balance?: string; amount: string; fee: string; left?: string }[]
-    kind?: 'evm' | 'sol' // a folder batch of an EVM asset or a Solana token: kept in the single-send slot, confirmed by its own call
+    feeMax?: boolean // the fees are a ceiling (EVM gas; a Solana token's recipient account is paid for once)
     sym?: string; feeSym?: string // what moves and what pays the fees (absent: SOL)
     warn?: string[] // the core's own warnings for any row (a contract recipient, a token its issuer can take back…)
     known?: boolean // the destination is one of the owner's accounts or contacts (set by the app)
@@ -102,7 +102,7 @@
     }
     closing = true
     holdTween?.kill()
-    if ((mode === 'send' || batch?.kind) && !done) await invoke('send_cancel').catch(() => {}) // before any animation: nothing can confirm now
+    if (mode === 'send' && !done) await invoke('send_cancel').catch(() => {}) // before any animation: nothing can confirm now
     secret = p0 = p1 = p2 = ''; words = []; checks = ['', '', '']; keys = null
     await tick() // secrets leave the DOM before the window becomes capturable again
     const s = el.getBoundingClientRect()
@@ -269,6 +269,7 @@
   function press() {
     const conf = draft ?? batch
     if (busy || closing || !ready || !conf) return
+    if (needTail && tail.trim().length !== 4) { err = 'Введите последние 4 знака адреса получателя'; haptic('err'); return }
     if (!conf.open && !p1) { err = 'Введите пароль'; haptic('err'); return }
     holdTween?.kill()
     holdTween = gsap.to({ v: hold }, { v: 1, duration: still ? 0.3 : 1.2 * (1 - hold), ease: 'none', onUpdate() { hold = this.targets()[0].v }, onComplete: () => { haptic('ok'); confirmSend() } }) // the phone answers the full hold
@@ -281,12 +282,15 @@
     if (closing) return // closed during the quiet beat
     const pass = conf.open ? '' : p1
     busy = true; err = ''
-    try { await invoke(batch ? (batch.kind ? `${batch.kind}_batch_confirm` : 'batch_confirm') : 'send_confirm', { id: conf.id, pass }); busy = false; await close(true) }
+    try { await invoke(batch ? 'batch_confirm' : 'send_confirm', batch ? { id: conf.id, pass, tail: needTail ? tail.trim() : null } : { id: conf.id, pass }); busy = false; await close(true) }
     catch (e) { err = humanErr(e); busy = false; hold = 0 }
   }
 
   // the agent's request: «Отклонить» closes it for good; the cross only hides the sheet (it waits up to 10 minutes)
-  async function rejectBatch() { if (!batch || busy) return; await invoke(batch.kind ? 'send_cancel' : 'batch_reject', { id: batch.id }).catch(() => {}); close(false) }
+  async function rejectBatch() { if (!batch || busy) return; await invoke('batch_reject', { id: batch.id }).catch(() => {}); close(false) }
+  // an agent's or add-on's plan to an address new on its network: the owner types its last 4 characters (the core checks)
+  let tail = $state('')
+  const needTail = $derived(!!batch && batch.by !== 'owner' && batch.newRecipient)
   const ru = (n: string) => n.replace('.', ',') // the core writes 1.5; the screen says 1,5
   const plural = (n: number) => n % 10 === 1 && n % 100 !== 11 ? 'перевод' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'перевода' : 'переводов'
   const shortA = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`
@@ -497,7 +501,7 @@
           <dl class="sum">
             <div><dt>Кому</dt><dd class="mono addr">{g4(batch.to)}</dd></div>
             <div><dt>Сеть</dt><dd class:warn={!batch.test}>{batch.network}{batch.test ? ' · тестовые деньги' : ' · настоящие деньги'}</dd></div>
-            <div><dt>Комиссии сети</dt><dd class="num">{batch.kind ? 'до ' : ''}{ru(batch.fees)} {batch.feeSym ?? 'SOL'}</dd></div>
+            <div><dt>Комиссии сети</dt><dd class="num">{batch.feeMax ? 'до ' : ''}{ru(batch.fees)} {batch.feeSym ?? 'SOL'}</dd></div>
           </dl>
           {#each batch.warn ?? [] as w}<p class="hint warn">{w}</p>{/each}
           {#if !batch.known || batch.newRecipient}<p class="hint warn">{!batch.known ? 'Этого адреса нет среди ваших счетов и контактов. ' : ''}{batch.newRecipient ? 'В сети этот адрес ещё пустой. ' : ''}Сверьте его по буквам: отменить переводы нельзя.</p>{/if}
@@ -507,6 +511,7 @@
             {/each}
           </ol>
           <p class="hint">Подписано будет ровно это{batch.by === 'owner' ? '' : batch.by === 'addon' ? `: дополнение «${batch.byName}» не может поменять суммы или адрес` : ': агент не может поменять суммы или адрес'}.</p>
+          {#if needTail}<label><span class="label">Последние 4 знака адреса — из вашего источника</span><span class="field"><input class="mono" bind:value={tail} maxlength="4" autocomplete="off" autocapitalize="off" spellcheck="false" disabled={!ready} /></span></label>{/if}
           {#if !batch.open}<label><span class="label">Пароль кошелька</span><span class="field"><input type="password" bind:value={p1} autocomplete="current-password" disabled={!ready} /></span></label>{/if}
           <div class="acts">
             <button class="btn" type="button" onclick={rejectBatch} disabled={busy}>Отклонить</button>

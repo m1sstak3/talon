@@ -5,31 +5,39 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::evm;
 use crate::solana::{self, Cluster};
 
 pub const MAX_SOURCES: usize = 50;
 pub const PER_MIN: usize = 5; // new requests per minute
 pub const TTL: Duration = Duration::from_secs(600); // a plan not confirmed in 10 minutes is gone
-pub const READS_PER_MIN: usize = 30; // reads that reach a node (balances, history, status of a request)
+pub const READS_PER_MIN: usize = 30; // reads that reach a node (balances, history)
 
-/// one source of a batch: an own account, the exact lamports it sends and the fee it pays at the plan's price
+// One place for every batch (docs/BATCHES.md, reviewed 11.10): whoever made it — the owner's folder, an agent, an add-on —
+// a plan is the exact transactions the owner reads, one per own account. Nothing is rebuilt at confirm: only what goes
+// stale is refreshed (Solana: the blockhash; EVM: the nonce is checked, gas and fees stay frozen), a row that moved is
+// left out with the reason, one password signs the rest.
+
+/// the planned transactions: (own account id, the draft the owner reads)
 #[derive(Clone)]
-pub struct Row { pub account: String, pub name: String, pub from: String, pub balance: u64, pub amount: u64, pub fee: u64 }
-/// an immutable plan: the password confirms exactly this (destination, rows, price); any change = a new request
+pub enum Body { Sol(Vec<(String, solana::Draft)>), Evm(Vec<(String, evm::Draft)>) }
+/// an immutable plan: the password confirms exactly this; any change = a new request
 #[derive(Clone)]
-pub struct Plan { pub id: String, pub cluster: Cluster, pub to: String, pub new_recipient: bool, pub price: u64, pub rows: Vec<Row>, pub at: Instant, pub owner: bool, pub addon: Option<String> } // owner: made by hand (a folder); addon: proposed by that add-on
-/// what became of one row after the owner confirmed
+pub struct Plan { pub id: String, pub to: String, pub new_recipient: bool, pub body: Body, pub view: Value, pub at: Instant, pub owner: bool, pub addon: Option<String> } // owner: made by hand (a folder); addon: proposed by that add-on
+/// what became of one row after the owner confirmed; `state` follows the core's own trackers (lib.rs `told`)
 #[derive(Clone)]
-pub struct Done { pub account: String, pub sig: Option<String>, pub error: Option<String> }
+pub struct Done { pub account: String, pub sig: Option<String>, pub error: Option<String>, pub state: &'static str }
+/// a signed row, ready to journal and send
+pub enum Tx { Sol(solana::Draft, [u8; 64]), Evm(evm::Draft, Vec<u8>) }
 
 #[derive(Default)]
 pub struct Hub {
     pub on: bool,
     pub waiting: Option<Plan>,
-    pub closed: HashMap<String, (Cluster, Result<Vec<Done>, String>)>, // id -> results, or why it never ran (rejected, expired, locked)
+    pub closed: HashMap<String, Result<Vec<Done>, String>>, // id -> results, or why it never ran (rejected, expired, locked)
     recent: VecDeque<Instant>,
     reads: VecDeque<Instant>,
     #[cfg(windows)]
@@ -39,12 +47,21 @@ pub struct Hub {
 impl Hub {
     /// the waiting plan, dropped (and recorded) once it is past its time
     pub fn live(&mut self) -> Option<&Plan> {
-        if self.waiting.as_ref().is_some_and(|p| p.at.elapsed() > TTL) { let p = self.waiting.take().unwrap(); self.close(&p.id, p.cluster, Err("время на подтверждение вышло".into())) }
+        if self.waiting.as_ref().is_some_and(|p| p.at.elapsed() > TTL) { let p = self.waiting.take().unwrap(); self.close(&p.id, Err("время на подтверждение вышло".into())) }
         self.waiting.as_ref()
     }
-    pub fn close(&mut self, id: &str, c: Cluster, r: Result<Vec<Done>, String>) {
+    pub fn close(&mut self, id: &str, r: Result<Vec<Done>, String>) {
         if self.closed.len() > 50 { self.closed.clear() } // ponytail: forget old outcomes wholesale; agents poll within minutes
-        self.closed.insert(id.into(), (c, r));
+        self.closed.insert(id.into(), r);
+    }
+    /// a send's state as the core's tracker saw it (status never asks a node)
+    pub fn seen(&mut self, sig: &str, state: &'static str) {
+        let st = match state { "confirmed" | "finalized" | "unknown" => state, "failed" | "failed-allowance" => "failed", "expired" | "replaced" => "expired", _ => return };
+        for d in self.closed.values_mut().filter_map(|r| r.as_mut().ok()).flatten().filter(|d| d.sig.as_deref() == Some(sig)) { d.state = st }
+    }
+    /// the network refused a send outright: nothing left the account
+    pub fn refused(&mut self, sig: &str, why: String) {
+        for d in self.closed.values_mut().filter_map(|r| r.as_mut().ok()).flatten().filter(|d| d.sig.as_deref() == Some(sig)) { d.sig = None; d.state = "not-sent"; d.error = Some(why.clone()) }
     }
     /// reads that reach a node: a looping agent must not keep the owner's own node rate-limited
     pub fn admit_read(&mut self, now: Instant) -> Result<(), String> {
@@ -63,92 +80,179 @@ impl Hub {
 }
 
 #[derive(Deserialize, Clone)]
-pub struct Source { pub account: String, pub amount: String } // "1.5" SOL or "max"
+pub struct Source { pub account: String, pub amount: String } // "1.5" or "max"
 
-/// sources -> plan: own accounts only, no duplicates, no self-transfer, each row priced and dry-run by the core
-pub async fn plan(accounts: &[crate::vault::Account], c: Cluster, to: &str, sources: &[Source], id: String, owner: bool, addon: Option<String>) -> Result<Plan, String> {
-    if sources.is_empty() { return Err("нет ни одного счёта-источника".into()) }
-    if sources.len() > MAX_SOURCES { return Err(format!("не больше {MAX_SOURCES} счетов в одном запросе")) }
-    if !solana::valid_address(to) { return Err("получатель: это не адрес Solana".into()) }
-    let mut seen = std::collections::HashSet::new();
-    let price = solana::sol_price(c).await?;
-    let fee = solana::sol_transfer_fee(price);
-    let mut rows = Vec::with_capacity(sources.len());
-    let mut new_recipient = false;
-    for s in sources {
-        let a = accounts.iter().find(|a| a.id == s.account || a.solana == s.account).ok_or_else(|| format!("счёт {} не из этого кошелька", s.account))?;
-        if !seen.insert(a.id.clone()) { return Err(format!("счёт «{}» указан дважды", a.name)) }
-        if a.ledger { return Err(format!("счёт «{}» подписывает Ledger: в пакет он не входит", a.name)) }
-        if a.solana == to { return Err(format!("счёт «{}» и есть получатель", a.name)) }
-        let bal = solana::balance(&a.solana, c).await?;
-        let amount = if s.amount.trim().eq_ignore_ascii_case("max") {
-            bal.checked_sub(fee).filter(|v| *v > 0).ok_or_else(|| format!("на счёте «{}» не хватает даже на комиссию", a.name))?
-        } else { solana::parse_amount(&s.amount, 9)? };
-        // the core's own checks: recipient kind, rent rules, balance, dry run; at the plan's fixed price
-        let d = solana::prepare_priced(&a.solana, to, amount, c, Some(price)).await.map_err(|e| format!("«{}»: {e}", a.name))?;
-        if d.fee != fee { return Err("сеть посчитала другую комиссию: попробуйте ещё раз".into()) }
-        new_recipient |= d.new_recipient;
-        rows.push(Row { account: a.id.clone(), name: a.name.clone(), from: a.solana.clone(), balance: bal, amount, fee });
+/// where a batch goes: a Solana cluster, or an EVM network from the core's table (its own node)
+pub enum Net { Sol(Cluster), Evm { chain_id: u64, rpc: &'static str } }
+impl Net {
+    /// the one network gate for batches, as for single sends: development builds move test money only, the local test
+    /// chains only with a throwaway vault; release builds never the local ones (whatever listens there could lie)
+    pub fn parse(network: &str) -> Result<Net, String> {
+        let n = match Cluster::parse(network) {
+            Ok(c) => Net::Sol(c),
+            Err(_) => evm::find(network).map(|(chain_id, rpc)| Net::Evm { chain_id, rpc }).ok_or("такой сети кошелёк не знает: mainnet, devnet или EVM-сеть из списка")?,
+        };
+        let local = matches!(n, Net::Sol(Cluster::Local) | Net::Evm { chain_id: 31337, .. });
+        #[cfg(debug_assertions)]
+        {
+            let test = match &n { Net::Sol(c) => !matches!(c, Cluster::Mainnet), Net::Evm { chain_id, .. } => evm::is_test(*chain_id) };
+            if !test { return Err("настоящие сети закрыты в сборке для разработки; переводы — только в установленной программе".into()) }
+            if local && std::env::var("CW_VAULT").is_err() { return Err("локальная сеть: только с одноразовым хранилищем (CW_VAULT)".into()) }
+        }
+        #[cfg(not(debug_assertions))]
+        if local { return Err("локальная тестовая сеть только в сборке для разработки".into()) }
+        Ok(n)
     }
-    Ok(Plan { id, cluster: c, to: to.into(), new_recipient, price, rows, at: Instant::now(), owner, addon })
 }
 
-/// the owner confirmed: each row rebuilt now (fresh blockhash) at the plan's amounts and price, signed with one
-/// decryption, each signature checked against its sender. A row whose numbers moved is left out with the reason.
-pub async fn sign_plan(plan: &Plan, vault: &std::path::Path, pass: &str) -> Result<(Vec<(Row, solana::Draft, [u8; 64])>, Vec<Done>), String> {
-    let mut built = Vec::new();
-    let mut skipped = Vec::new();
-    for r in &plan.rows {
-        match solana::prepare_priced(&r.from, &plan.to, r.amount, plan.cluster, Some(plan.price)).await {
-            Ok(d) if d.fee == r.fee => built.push((r.clone(), d)),
-            Ok(_) => skipped.push(Done { account: r.account.clone(), sig: None, error: Some("комиссия изменилась".into()) }),
-            Err(e) => skipped.push(Done { account: r.account.clone(), sig: None, error: Some(e) }),
-        }
+/// sources -> plan: own accounts only, one row per account and per sender address, no Ledger, no self-transfer; every row
+/// built, priced and dry-run by the core, «max» written out as the exact amount now; a native row whose fee is not less
+/// than its amount is refused. A requester (agent, add-on; `owner` false) also meets the recipient guard (an ordinary
+/// wallet, never a contract or a token account) and, on real money, the core's own token list
+pub async fn plan(accounts: &[crate::vault::Account], net: &Net, to: &str, token: Option<&str>, sources: &[Source], id: String, owner: bool, addon: Option<String>) -> Result<Plan, String> {
+    if sources.is_empty() { return Err("нет ни одного счёта-источника".into()) }
+    if sources.len() > MAX_SOURCES { return Err(format!("не больше {MAX_SOURCES} счетов в одном запросе")) }
+    let (to, token) = (to.trim(), token.map(str::trim).filter(|t| !t.is_empty()));
+    let mut seen = HashSet::new();
+    let mut own = vec![];
+    for s in sources {
+        let a = accounts.iter().find(|a| a.id == s.account || a.solana == s.account || a.evm.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(&s.account)))
+            .ok_or_else(|| format!("счёт {} не из этого кошелька", s.account))?;
+        if !seen.insert(a.id.clone()) { return Err(format!("счёт «{}» указан дважды", a.name)) }
+        if a.ledger { return Err(format!("счёт «{}» подписывает Ledger: в пакет он не входит", a.name)) }
+        own.push((a, s.amount.trim()));
     }
-    let items: Vec<(&str, &[u8])> = built.iter().map(|(r, d)| (r.account.as_str(), d.message.as_slice())).collect();
-    let sigs = crate::vault::sign_many(vault, pass, &items)?;
-    let mut out = Vec::new();
-    for ((r, d), sig) in built.into_iter().zip(sigs) {
-        let pk: [u8; 32] = bs58::decode(&d.from).into_vec().ok().and_then(|v| v.try_into().ok()).ok_or("bad sender")?;
-        ed25519_dalek::VerifyingKey::from_bytes(&pk).and_then(|k| k.verify_strict(&d.message, &ed25519_dalek::Signature::from_bytes(&sig)))
-            .map_err(|_| format!("подпись не сходится с адресом счёта «{}»", r.name))?;
-        out.push((r, d, sig));
+    let warns = |w: Vec<String>| w.into_iter().collect::<BTreeSet<_>>();
+    let (body, mut v) = match *net {
+        Net::Sol(c) => {
+            if !solana::valid_address(to) { return Err("получатель: это не адрес Solana".into()) }
+            if !owner && !solana::plain_wallet(to, c).await? { return Err("получатель — не обычный кошелёк (счёт токена или программы): по запросу туда не отправляем".into()) }
+            let price = if token.is_none() { solana::sol_price(c).await? } else { 0 }; // SOL rows: one fixed price, the fee the owner reads
+            let (mut rows, mut shown) = (vec![], vec![]);
+            for (a, amount) in &own {
+                if a.solana == to { return Err(format!("счёт «{}» и есть получатель", a.name)) }
+                let max = amount.eq_ignore_ascii_case("max");
+                let (d, left) = match token {
+                    Some(mint) => {
+                        let amount = if max {
+                            let (raw, dec) = solana::holding(&solana::watch(&a.solana, c).await?, mint).filter(|(r, _)| *r > 0).ok_or_else(|| format!("на счёте «{}» нет этого токена", a.name))?;
+                            solana::units(raw, dec as u32)
+                        } else { amount.replace(',', ".") };
+                        (solana::prepare_token(&a.solana, to, mint, &amount, c).await.map_err(|e| format!("«{}»: {e}", a.name))?, None)
+                    }
+                    None => {
+                        let fee = solana::sol_transfer_fee(price);
+                        let bal = solana::balance(&a.solana, c).await?;
+                        let lamports = if max { bal.checked_sub(fee).filter(|v| *v > 0).ok_or_else(|| format!("на счёте «{}» не хватает даже на комиссию", a.name))? } else { solana::parse_amount(amount, 9)? };
+                        let d = solana::prepare_priced(&a.solana, to, lamports, c, Some(price)).await.map_err(|e| format!("«{}»: {e}", a.name))?;
+                        if d.fee != fee { return Err("сеть посчитала другую комиссию: попробуйте ещё раз".into()) }
+                        (d, Some(bal.saturating_sub(lamports.saturating_add(fee))))
+                    }
+                };
+                if d.mint.is_none() && d.amount <= d.fee { return Err(format!("«{}»: комиссия не меньше суммы — такой перевод не имеет смысла", a.name)) }
+                if !owner && matches!(c, Cluster::Mainnet) && d.mint.is_some() && d.symbol.is_none() { return Err("по запросу — только известные токены (USDC, USDT): этот кошелёк не знает, кто его выпустил".into()) }
+                shown.push(json!({ "name": a.name, "from": d.from, "amount": solana::units(d.amount, d.decimals as u32), "fee": solana::units(d.fee + d.rent, 9), "left": left.map(|l| solana::units(l, 9)) }));
+                rows.push((a.id.clone(), d));
+            }
+            let d0 = &rows[0].1;
+            let v = json!({
+                "network": c.label(), "test": !matches!(c, Cluster::Mainnet), "newRecipient": rows.iter().any(|(_, d)| d.new_recipient),
+                "total": solana::units(rows.iter().map(|(_, d)| d.amount).sum(), d0.decimals as u32),
+                "sym": d0.symbol.map(str::to_string).unwrap_or_else(|| token.unwrap_or_default().to_string()), // a name only from the core's list; else the whole mint
+                "fees": solana::units(rows.iter().map(|(_, d)| d.fee + d.rent).sum(), 9), "feeSym": "SOL", "feeMax": token.is_some(), // a token row's rent is paid once per new recipient
+                "warn": warns(rows.iter().filter_map(|(_, d)| d.warn.map(str::to_string)).collect()), "rows": shown,
+            });
+            (Body::Sol(rows), v)
+        }
+        Net::Evm { chain_id, rpc } => {
+            if !evm::valid_address(to) { return Err("получатель: это не адрес EVM".into()) }
+            if !owner && evm::is_contract(rpc, to).await? { return Err("получатель — контракт: по запросу на контракты не отправляем".into()) }
+            let mut rows: Vec<(String, evm::Draft)> = vec![];
+            for (a, amount) in &own {
+                let from = a.evm.clone().ok_or_else(|| format!("у счёта «{}» нет адреса Ethereum", a.name))?;
+                // two accounts can carry one key: one row per sender ADDRESS, or two rows would take one nonce
+                if rows.iter().any(|(_, d)| d.from.eq_ignore_ascii_case(&from)) { return Err(format!("адрес счёта «{}» уже есть в пакете", a.name)) }
+                let d = evm::prepare(evm::Ask { rpc, chain_id, from: &from, to, amount, token, name: None, symbol: None }).await.map_err(|e| format!("«{}»: {e}", a.name))?;
+                if d.token.is_none() && d.fee_max >= d.amount { return Err(format!("«{}»: комиссия не меньше суммы — такой перевод не имеет смысла", a.name)) }
+                rows.push((a.id.clone(), d));
+            }
+            // ponytail: a token row's fee is paid in the coin and not capped against the amount; the sheet shows the ceiling
+            let d0 = &rows[0].1;
+            let v = json!({
+                "network": d0.network, "test": d0.test, "newRecipient": rows.iter().any(|(_, d)| d.new_recipient),
+                "total": evm::units(rows.iter().map(|(_, d)| d.amount).sum(), d0.decimals as u32), "sym": d0.symbol,
+                "fees": evm::units(rows.iter().map(|(_, d)| d.fee_max).sum(), 18), "feeSym": d0.native, "feeMax": true,
+                "warn": warns(rows.iter().filter_map(|(_, d)| d.warn.clone()).collect()), // the core's own words, never the requester's
+                "rows": rows.iter().zip(&own).map(|((_, d), (a, _))| json!({ "name": a.name, "from": d.from, "amount": evm::units(d.amount, d.decimals as u32), "fee": evm::units(d.fee_max, 18) })).collect::<Vec<_>>(),
+            });
+            (Body::Evm(rows), v)
+        }
+    };
+    let new_recipient = v["newRecipient"].as_bool() == Some(true);
+    v["id"] = json!(id); v["to"] = json!(to); v["count"] = json!(own.len());
+    v["by"] = json!(if owner { "owner" } else if addon.is_some() { "addon" } else { "agent" }); v["byName"] = json!(addon);
+    Ok(Plan { id, to: to.into(), new_recipient, body, view: v, at: Instant::now(), owner, addon })
+}
+
+/// the owner confirmed: each row refreshed (Solana: a fresh blockhash; EVM: nonce, balance and dry run re-checked) and
+/// left out with the reason if it moved; one decryption signs the rest; each signature checked against its sender
+pub async fn sign(body: &Body, vault: &std::path::Path, pass: &str) -> Result<(Vec<(String, Tx)>, Vec<Done>), String> {
+    let skip = |a: &str, e: String| Done { account: a.into(), sig: None, error: Some(e), state: "not-sent" };
+    let (mut out, mut skipped) = (vec![], vec![]);
+    match body {
+        Body::Sol(rows) => {
+            let mut built = vec![];
+            for (a, d) in rows { match solana::refresh(d).await { Ok(f) => built.push((a.clone(), f)), Err(e) => skipped.push(skip(a, e)) } }
+            if built.is_empty() { return Ok((out, skipped)) }
+            let items: Vec<(&str, &[u8])> = built.iter().map(|(a, d)| (a.as_str(), d.message.as_slice())).collect();
+            let sigs = crate::vault::sign_many(vault, pass, &items)?;
+            for ((a, d), sig) in built.into_iter().zip(sigs) {
+                let pk: [u8; 32] = bs58::decode(&d.from).into_vec().ok().and_then(|v| v.try_into().ok()).ok_or("bad sender")?;
+                ed25519_dalek::VerifyingKey::from_bytes(&pk).and_then(|k| k.verify_strict(&d.message, &ed25519_dalek::Signature::from_bytes(&sig)))
+                    .map_err(|_| "подпись не сходится с адресом счёта".to_string())?;
+                out.push((a, Tx::Sol(d, sig)));
+            }
+        }
+        Body::Evm(rows) => {
+            let mut built = vec![];
+            for (a, d) in rows { match evm::recheck(d).await { Ok(()) => built.push((a.clone(), d.clone())), Err(e) => skipped.push(skip(a, e)) } }
+            if built.is_empty() { return Ok((out, skipped)) }
+            let items: Vec<(&str, [u8; 32])> = built.iter().map(|(a, d)| (a.as_str(), d.hash())).collect();
+            let sigs = crate::vault::sign_evm_many(vault, pass, &items)?;
+            for ((a, d), (sig, parity)) in built.into_iter().zip(sigs) {
+                let rs = k256::ecdsa::Signature::from_slice(&sig).map_err(|_| "подпись повреждена".to_string())?;
+                let rec = k256::ecdsa::RecoveryId::from_byte(parity).ok_or("подпись повреждена")?;
+                let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(&d.hash(), &rs, rec).map_err(|_| "подпись повреждена".to_string())?;
+                if crate::vault::evm_address_of(&vk) != d.from { return Err("подпись не сходится с адресом счёта".into()) }
+                let raw = d.signed(&sig, parity);
+                out.push((a, Tx::Evm(d, raw)));
+            }
+        }
     }
     Ok((out, skipped))
 }
 
-/// what the confirmation shows: plain numbers and addresses, no text from the agent (prompt injection has no voice here)
-pub fn view(p: &Plan, open: bool) -> Value {
-    let u = |v: u64| solana::units(v, 9);
-    let total: u64 = p.rows.iter().map(|r| r.amount).sum();
-    let fees: u64 = p.rows.iter().map(|r| r.fee).sum();
-    json!({
-        "id": p.id, "by": if p.owner { "owner" } else if p.addon.is_some() { "addon" } else { "agent" }, "byName": p.addon, "network": p.cluster.label(), "test": !matches!(p.cluster, Cluster::Mainnet), "to": p.to, "newRecipient": p.new_recipient,
-        "open": open, "count": p.rows.len(), "total": u(total), "fees": u(fees), "expires": (TTL.saturating_sub(p.at.elapsed())).as_secs(),
-        "rows": p.rows.iter().map(|r| json!({ "name": r.name, "from": r.from, "balance": u(r.balance), "amount": u(r.amount), "fee": u(r.fee), "left": u(r.balance - r.amount - r.fee) })).collect::<Vec<_>>(),
-    })
+/// what the confirmation shows: plain numbers and addresses, no text from the requester (prompt injection has no voice here)
+pub fn show(p: &Plan, open: bool) -> Value {
+    let mut v = p.view.clone();
+    v["open"] = json!(open);
+    v["expires"] = json!(TTL.saturating_sub(p.at.elapsed()).as_secs());
+    v
+}
+/// a requester's plan to an address new on its network: the owner types the address's last 4 characters (a swapped
+/// address shows up here). EVM addresses compare without case
+pub fn tail_ok(to: &str, tail: Option<&str>) -> bool {
+    let t = tail.unwrap_or("").trim();
+    t.chars().count() == 4 && if to.starts_with("0x") { to.to_ascii_lowercase().ends_with(&t.to_ascii_lowercase()) } else { to.ends_with(t) }
 }
 
-/// the agent's view of a request: waiting, closed with a reason, or each row with its live network state
-pub async fn status(hub: &std::sync::Mutex<Hub>, id: &str) -> Value {
-    let (waiting, closed) = {
-        let mut h = hub.lock().unwrap();
-        let w = h.live().filter(|p| p.id == id).map(|p| (p.rows.len(), p.at.elapsed().as_secs()));
-        (w, h.closed.get(id).cloned())
-    };
-    if let Some((n, age)) = waiting { return json!({ "id": id, "state": "waiting", "transfers": n, "secondsLeft": TTL.as_secs().saturating_sub(age) }) }
-    match closed {
+/// the agent's view of a request: waiting, closed with a reason, or each row with the state the core's tracker saw
+pub fn status(h: &mut Hub, id: &str) -> Value {
+    if let Some(p) = h.live().filter(|p| p.id == id) { return json!({ "id": id, "state": "waiting", "transfers": p.view["count"], "secondsLeft": TTL.saturating_sub(p.at.elapsed()).as_secs() }) }
+    match h.closed.get(id) {
         None => json!({ "id": id, "state": "unknown" }),
-        Some((_, Err(why))) => json!({ "id": id, "state": "closed", "reason": why }),
-        Some((c, Ok(rows))) => {
-            let sigs: Vec<String> = rows.iter().filter_map(|r| r.sig.clone()).collect();
-            let mut states = solana::sig_states(&sigs, c).await.into_iter();
-            let out: Vec<Value> = rows.iter().map(|r| {
-                let st = if r.sig.is_some() { states.next().unwrap_or("unknown") } else { "not-sent" };
-                json!({ "account": r.account, "sig": r.sig, "state": st, "error": r.error })
-            }).collect();
-            json!({ "id": id, "state": "confirmed", "transfers": out })
-        }
+        Some(Err(why)) => json!({ "id": id, "state": "closed", "reason": why }),
+        Some(Ok(rows)) => json!({ "id": id, "state": "confirmed", "transfers": rows.iter().map(|r| json!({ "account": r.account, "sig": r.sig, "state": r.state, "error": r.error })).collect::<Vec<_>>() }),
     }
 }
 
@@ -202,10 +306,11 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
         let unlocked = st.session.lock().unwrap().unlocked;
         let mut h = st.agent.lock().unwrap();
         // someone else's batch: the agent learns that one waits, never its id (its outcome is not the agent's to read)
-        let w = h.live().map(|p| if p.owner || p.addon.is_some() { json!({ "by": if p.owner { "owner" } else { "addon" }, "transfers": p.rows.len() }) } else { json!({ "id": p.id, "by": "agent", "transfers": p.rows.len() }) });
+        let w = h.live().map(|p| if p.owner || p.addon.is_some() { json!({ "by": if p.owner { "owner" } else { "addon" }, "transfers": p.view["count"] }) } else { json!({ "id": p.id, "by": "agent", "transfers": p.view["count"] }) });
         return Ok(json!({ "unlocked": unlocked, "waiting": w, "version": env!("CARGO_PKG_VERSION"),
-            "can": ["read accounts, folders, balances (Solana and EVM), history", "request SOL transfers from own accounts to one address (the owner confirms)"],
-            "cannot": ["sign", "export keys or words", "send tokens or EVM coins yet", "change settings"] }))
+            "can": ["read accounts, folders, balances (Solana and EVM), history",
+                "request transfers from own accounts to one address: SOL, Solana tokens, the coin or a listed stablecoin of an EVM network from networks (the owner confirms)"],
+            "cannot": ["sign", "export keys or words", "send to a contract or a token account", "TON or networks the owner added by hand", "change settings"] }))
     }
     let accounts = {
         let s = st.session.lock().unwrap();
@@ -214,7 +319,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
     };
     // the local test chain answers unverified: agents reach it only in development builds
     let net = || Cluster::parse(p["network"].as_str().unwrap_or("mainnet")).and_then(|c| if matches!(c, Cluster::Local) && !cfg!(debug_assertions) { Err("локальная тестовая сеть только в сборке для разработки".into()) } else { Ok(c) });
-    if matches!(method, "balances" | "evm_balances" | "history" | "request_status") { st.agent.lock().unwrap().admit_read(Instant::now())? }
+    if matches!(method, "balances" | "evm_balances" | "history") { st.agent.lock().unwrap().admit_read(Instant::now())? }
     match method {
         "accounts" => Ok(json!(accounts.iter().map(|a| json!({ "id": a.id, "name": a.name, "solana": a.solana, "evm": a.evm, "ton": a.ton })).collect::<Vec<_>>())),
         "balances" => {
@@ -228,27 +333,20 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
             Ok(json!({ "network": c.name(), "accounts": out, "note": "lamports and token amounts are integers in base units" }))
         }
         "request_transfer" => {
-            if p["network"].as_str().is_none() { return Err("network: mainnet (настоящие деньги) или devnet — укажите явно".into()) }
-            let c = net()?;
-            #[cfg(debug_assertions)]
-            if matches!(c, Cluster::Mainnet) { return Err("основная сеть закрыта в сборке для разработки".into()) }
-            #[cfg(debug_assertions)]
-            if matches!(c, Cluster::Local) && std::env::var("CW_VAULT").is_err() { return Err("локальная сеть: только с одноразовым хранилищем".into()) }
-            #[cfg(not(debug_assertions))]
-            if matches!(c, Cluster::Local) { return Err("локальная тестовая сеть только в сборке для разработки".into()) }
-            let to = p["to"].as_str().ok_or("нужен адрес получателя: to")?.trim().to_string();
+            let net = Net::parse(p["network"].as_str().ok_or("network: mainnet (настоящие деньги), devnet или EVM-сеть из networks — укажите явно")?)?;
+            let to = p["to"].as_str().ok_or("нужен адрес получателя: to")?;
             let sources: Vec<Source> = serde_json::from_value(p["sources"].clone()).map_err(|_| "sources: список { account, amount }".to_string())?;
+            let busy = || "уже есть запрос, который ждёт подтверждения владельца".to_string();
             {
                 let mut h = st.agent.lock().unwrap();
-                if h.live().is_some() { return Err("уже есть запрос, который ждёт подтверждения владельца".into()) }
+                if h.live().is_some() { return Err(busy()) }
                 h.admit(Instant::now())?;
             }
-            let plan = plan(&accounts, c, &to, &sources, crate::rand_id(), false, None).await?;
-            let open = crate::vault::is_open(&crate::vault_path(app)?);
-            let v = view(&plan, open);
+            let plan = plan(&accounts, &net, to, p["token"].as_str(), &sources, crate::rand_id(), false, None).await?;
+            let v = show(&plan, crate::vault::is_open(&crate::vault_path(app)?));
             {
                 let mut h = st.agent.lock().unwrap();
-                if h.live().is_some() { return Err("уже есть запрос, который ждёт подтверждения владельца".into()) }
+                if h.live().is_some() { return Err(busy()) }
                 h.waiting = Some(plan);
             }
             let _ = app.emit_to("main", "agent-request", v.clone());
@@ -256,7 +354,7 @@ pub async fn call(app: &tauri::AppHandle, method: &str, p: &Value) -> Result<Val
             if let Some(w) = app.get_webview_window("main") { let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational)); }
             Ok(json!({ "id": v["id"], "state": "waiting", "plan": v, "next": "the owner confirms in the wallet window; poll request_status" }))
         }
-        "request_status" => Ok(status(&st.agent, p["id"].as_str().unwrap_or("")).await),
+        "request_status" => Ok(status(&mut st.agent.lock().unwrap(), p["id"].as_str().unwrap_or(""))),
         // the owner's folders: named groups of account ids (own and watch-only); sources for a request come from here
         // own accounts only: watch-only addresses in a folder are not the agent's business (nor a destination)
         "folders" => Ok(json!(crate::folders::read(&crate::vault_path(app)?.with_file_name("folders.json"))?.into_iter()
@@ -308,13 +406,28 @@ mod tests {
         for _ in 0..PER_MIN { h.admit(t).unwrap() }
         assert!(h.admit(t).is_err(), "sixth request in a minute refused");
         assert!(h.admit(t + Duration::from_secs(61)).is_ok(), "window slides");
-        h.waiting = Some(Plan { id: "a".into(), cluster: Cluster::Local, to: String::new(), new_recipient: false, price: 0, rows: vec![], at: t - TTL - Duration::from_secs(1), owner: false, addon: None });
+        h.waiting = Some(Plan { id: "a".into(), to: String::new(), new_recipient: false, body: Body::Sol(vec![]), view: json!({}), at: t - TTL - Duration::from_secs(1), owner: false, addon: None });
         assert!(h.live().is_none(), "an old plan expires");
-        assert!(matches!(h.closed.get("a"), Some((_, Err(_)))));
+        assert!(matches!(h.closed.get("a"), Some(Err(_))));
+        // outcomes come from the core's trackers; a refusal clears the signature
+        let row = |s: &str| Done { account: "x".into(), sig: Some(s.into()), error: None, state: "pending" };
+        h.close("b", Ok(vec![row("s1"), row("s2"), row("s3")]));
+        h.seen("s1", "confirmed"); h.seen("s1", "finalized"); h.seen("s2", "replaced"); h.seen("s3", "sent");
+        h.refused("s3", "nope".into());
+        let v = status(&mut h, "b");
+        let st: Vec<&str> = v["transfers"].as_array().unwrap().iter().map(|r| r["state"].as_str().unwrap()).collect();
+        assert_eq!(st, ["finalized", "expired", "not-sent"]);
+        assert!(v["transfers"][2]["sig"].is_null());
+        assert_eq!(status(&mut h, "a")["state"], "closed");
+        // the last 4 characters of a new recipient: exact for Solana, any case for EVM
+        assert!(tail_ok("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", Some(" VFin ")));
+        assert!(!tail_ok("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", Some("vfin")));
+        assert!(tail_ok("0x52908400098527886E0F7030069857D2E4169EE7", Some("9ee7")));
+        assert!(!tail_ok("0x52908400098527886E0F7030069857D2E4169EE7", Some("EE7")) && !tail_ok("0x52908400098527886E0F7030069857D2E4169EE7", None));
         assert_eq!(solana::sol_transfer_fee(1_000), 5001);
         assert_eq!(solana::sol_transfer_fee(1_000_000), 6000);
     }
-    // a batch end to end on a local validator: plan (own accounts, "max", fixed price), sign_plan with one decryption,
+    // a batch end to end on a local validator: plan (own accounts, "max", fixed price), sign with one decryption,
     // submit, finalize; the destination gets exactly the planned sum and "max" sources end at zero.
     // `CW_TEST_LOCAL=1 cargo test batch_live -- --ignored --nocapture` with solana-test-validator running
     #[test]
@@ -324,6 +437,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             assert!(std::env::var("CW_TEST_LOCAL").is_ok(), "local validator only");
             let c = Cluster::Local;
+            let net = Net::Sol(c);
             let dir = std::env::temp_dir().join(format!("cw-batch-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             let p = dir.join("vault.json");
@@ -341,25 +455,27 @@ mod tests {
             for a in &accs { while solana::balance(&a.solana, c).await.unwrap() == 0 { tokio::time::sleep(Duration::from_millis(500)).await } }
             let to = vault::sol_address(&vault::solana_key(&vault::new_phrase(), 0));
             let src = |a: &str, v: &str| Source { account: a.into(), amount: v.into() };
-            // refusals: foreign account, duplicate, self as recipient, too many
-            assert!(plan(&accs, c, &to, &[src("nope", "1")], "x".into(), false, None).await.is_err());
-            assert!(plan(&accs, c, &to, &[src(&accs[0].id, "1"), src(&accs[0].id, "1")], "x".into(), false, None).await.is_err());
-            assert!(plan(&accs, c, &accs[1].solana, &[src(&accs[1].id, "1")], "x".into(), false, None).await.is_err());
-            assert!(plan(&accs, c, &to, &vec![src(&accs[0].id, "1"); MAX_SOURCES + 1], "x".into(), false, None).await.is_err());
-            let pl = plan(&accs, c, &to, &[src(&accs[0].id, "0.5"), src(&accs[1].id, "max"), src(&accs[2].solana, "MAX")], "b1".into(), false, None).await.unwrap();
-            let v = view(&pl, false);
-            assert_eq!((v["count"].as_u64(), v["newRecipient"].as_bool()), (Some(3), Some(true)));
+            // refusals: foreign account, duplicate, self as recipient, too many, a requester sending to a program's account
+            assert!(plan(&accs, &net, &to, None, &[src("nope", "1")], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, &net, &to, None, &[src(&accs[0].id, "1"), src(&accs[0].id, "1")], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, &net, &accs[1].solana, None, &[src(&accs[1].id, "1")], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, &net, &to, None, &vec![src(&accs[0].id, "1"); MAX_SOURCES + 1], "x".into(), false, None).await.is_err());
+            assert!(plan(&accs, &net, "SysvarRent111111111111111111111111111111111", None, &[src(&accs[0].id, "0.5")], "x".into(), false, None).await.is_err());
+            let pl = plan(&accs, &net, &to, None, &[src(&accs[0].id, "0.5"), src(&accs[1].id, "max"), src(&accs[2].solana, "MAX")], "b1".into(), false, None).await.unwrap();
+            let v = show(&pl, false);
+            assert_eq!((v["count"].as_u64(), v["newRecipient"].as_bool(), v["by"].as_str()), (Some(3), Some(true), Some("agent")));
             assert_eq!(v["rows"][1]["left"], "0");
-            let want: u64 = pl.rows.iter().map(|r| r.amount).sum();
-            assert!(sign_plan(&pl, &p, "wrong password!!").await.is_err(), "wrong password signs nothing");
-            let (signed, skipped) = sign_plan(&pl, &p, pass).await.unwrap();
+            let Body::Sol(rows) = &pl.body else { panic!() };
+            let want: u64 = rows.iter().map(|(_, d)| d.amount).sum();
+            assert!(sign(&pl.body, &p, "wrong password!!").await.is_err(), "wrong password signs nothing");
+            let (signed, skipped) = sign(&pl.body, &p, pass).await.unwrap();
             assert!(skipped.is_empty() && signed.len() == 3);
-            for (_, d, sig) in &signed { assert!(matches!(solana::submit(d, sig).await, solana::Sent::Ok)) }
-            for (_, d, sig) in &signed { assert!(matches!(solana::track(&solana::tx_id(sig), c, d.last_valid, || {}).await, solana::Outcome::Confirmed)) }
+            let sent: Vec<(solana::Draft, [u8; 64])> = signed.into_iter().map(|(_, t)| match t { Tx::Sol(d, s) => (d, s), Tx::Evm(..) => panic!() }).collect();
+            for (d, sig) in &sent { assert!(matches!(solana::submit(d, sig).await, solana::Sent::Ok)) }
+            for (d, sig) in &sent { assert!(matches!(solana::track(&solana::tx_id(sig), c, d.last_valid, || {}).await, solana::Outcome::Confirmed)) }
             assert_eq!(solana::balance(&to, c).await.unwrap(), want);
             assert_eq!(solana::balance(&accs[1].solana, c).await.unwrap(), 0);
             assert_eq!(solana::balance(&accs[2].solana, c).await.unwrap(), 0);
-            assert_eq!(solana::sig_state(&solana::tx_id(&signed[0].2), c).await, "finalized");
             let _ = std::fs::remove_dir_all(&dir);
         });
     }

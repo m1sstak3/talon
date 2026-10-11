@@ -295,6 +295,12 @@ async fn account(http: &reqwest::Client, c: Cluster, addr: &str) -> Result<Optio
     let Some(v) = r.get("value").filter(|v| !v.is_null()) else { return Ok(None) };
     Ok(Some(Raw { owner: v["owner"].as_str().unwrap_or("").into(), exec: v["executable"].as_bool() == Some(true), data: b64(&v["data"]).ok_or("bad account answer")? }))
 }
+/// an ordinary wallet: empty, or owned by the system program (not a token account, not a program's account)
+pub async fn plain_wallet(addr: &str, c: Cluster) -> Result<bool, String> {
+    let http = client()?;
+    guard(&http, c).await?;
+    Ok(account(&http, c, addr).await?.is_none_or(|a| a.owner == SYSTEM && !a.exec))
+}
 async fn rent_for(http: &reqwest::Client, c: Cluster, len: usize) -> Result<u64, String> {
     rpc(http, c, "getMinimumBalanceForRentExemption", json!([len])).await?.as_u64().ok_or_else(|| "bad rent answer".into())
 }
@@ -515,24 +521,6 @@ pub async fn balance(address: &str, c: Cluster) -> Result<u64, String> {
     let http = client()?; guard(&http, c).await?;
     value_u64(&rpc(&http, c, "getBalance", json!([address, { "commitment": "confirmed" }])).await?)
 }
-/// the network's view of a signature right now: "pending" | "confirmed" | "finalized" | "failed" | "unknown"
-pub async fn sig_state(sig: &str, c: Cluster) -> &'static str { sig_states(&[sig.to_string()], c).await[0] }
-/// the same for up to 256 signatures in ONE call (an agent polling a 50-row batch must not burn the node's limit)
-pub async fn sig_states(sigs: &[String], c: Cluster) -> Vec<&'static str> {
-    let unknown = || vec!["unknown"; sigs.len()];
-    if sigs.is_empty() || sigs.len() > 256 { return unknown() }
-    let Ok(http) = client() else { return unknown() };
-    let Ok(r) = rpc(&http, c, "getSignatureStatuses", json!([sigs, { "searchTransactionHistory": true }])).await else { return unknown() };
-    let Some(a) = r.get("value").and_then(Value::as_array).filter(|a| a.len() == sigs.len()) else { return unknown() };
-    a.iter().map(|one| match status(&json!({ "value": [one] })) {
-        Some(Some(s)) if !s.ok => "failed",
-        Some(Some(s)) if s.finalized => "finalized",
-        Some(Some(s)) if s.confirmed => "confirmed",
-        Some(_) => "pending",
-        None => "unknown",
-    }).collect()
-}
-
 /// micro-lamports per compute unit: the 75th percentile of recent non-zero priority fees, 1 000 .. 1 000 000
 async fn priority_price(http: &reqwest::Client, c: Cluster) -> u64 {
     let mut fees: Vec<u64> = match rpc(http, c, "getRecentPrioritizationFees", json!([])).await {
